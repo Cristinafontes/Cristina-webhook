@@ -37,7 +37,7 @@ app.use(async (req, res, next) => {
 });
 
 app.get("/", (_req, res) => res.status(200).json({ ok: true, service: "Cristina WhatsApp Webhook" }));
-
+app.get("/webhook/gupshup", (_req, res) => res.status(200).send("ok"));
 app.post("/webhook/gupshup", async (req, res) => {
   res.status(200).end();
   try {
