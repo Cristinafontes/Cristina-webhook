@@ -1,60 +1,69 @@
-// google.esm.js
 import { google } from "googleapis";
+import dotenv from "dotenv";
 
-function getOAuth2Client() {
-  const {
-    GOOGLE_CLIENT_ID,
-    GOOGLE_CLIENT_SECRET,
-    GOOGLE_REDIRECT_URI,
-    GOOGLE_REFRESH_TOKEN,
-  } = process.env;
+dotenv.config();
 
-  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET || !GOOGLE_REDIRECT_URI || !GOOGLE_REFRESH_TOKEN) {
-    throw new Error("Faltam variáveis de ambiente do Google Calendar.");
-  }
+const calendar = google.calendar({ version: "v3" });
+const auth = new google.auth.JWT(
+  process.env.GOOGLE_CLIENT_EMAIL,
+  null,
+  (process.env.GOOGLE_PRIVATE_KEY || "").replace(/\\n/g, "\n"),
+  ["https://www.googleapis.com/auth/calendar"]
+);
 
-  const oAuth2Client = new google.auth.OAuth2(
-    GOOGLE_CLIENT_ID,
-    GOOGLE_CLIENT_SECRET,
-    GOOGLE_REDIRECT_URI
-  );
-  oAuth2Client.setCredentials({ refresh_token: GOOGLE_REFRESH_TOKEN });
-  return oAuth2Client;
-}
-
-export async function pingGoogle() {
-  const auth = getOAuth2Client();
-  const token = await auth.getAccessToken();
-  return !!token;
-}
-
-export async function createCalendarEvent({ summary, description, startISO, endISO, attendees = [], location }) {
-  const auth = getOAuth2Client();
-  const calendar = google.calendar({ version: "v3", auth });
-  const calendarId = process.env.GOOGLE_CALENDAR_ID || "primary";
-
-  const event = {
-    summary,
-    description,
-    start: { dateTime: startISO },
-    end: { dateTime: endISO },
-    attendees,
-    location,
-    reminders: {
-      useDefault: false,
-      overrides: [
-        { method: "email", minutes: 24 * 60 },
-        { method: "popup", minutes: 60 },
-      ],
-    },
-    transparency: "opaque",
-    visibility: "private",
-  };
-
-  const { data } = await calendar.events.insert({
-    calendarId,
-    requestBody: event,
-    sendUpdates: "all",
+async function listEventsInRange(start, end) {
+  await auth.authorize();
+  const res = await calendar.events.list({
+    auth,
+    calendarId: process.env.GOOGLE_CALENDAR_ID,
+    timeMin: start.toISOString(),
+    timeMax: end.toISOString(),
+    singleEvents: true,
+    orderBy: "startTime"
   });
-  return data;
+  return res.data.items || [];
+}
+
+export async function isSlotFree(start, end) {
+  const events = await listEventsInRange(start, end);
+  return events.length === 0;
+}
+
+export async function createCalendarEvent({ summary, description, start, end, phone }) {
+  await auth.authorize();
+  await calendar.events.insert({
+    auth,
+    calendarId: process.env.GOOGLE_CALENDAR_ID,
+    requestBody: {
+      summary,
+      description,
+      start: { dateTime: start.toISOString(), timeZone: "America/Sao_Paulo" },
+      end: { dateTime: end.toISOString(), timeZone: "America/Sao_Paulo" },
+      extendedProperties: { private: { phone: String(phone || "") } }
+    }
+  });
+}
+
+export async function cancelLatestEventByPhone(phone) {
+  await auth.authorize();
+  const now = new Date();
+  const res = await calendar.events.list({
+    auth,
+    calendarId: process.env.GOOGLE_CALENDAR_ID,
+    timeMin: now.toISOString(),
+    maxResults: 50,
+    singleEvents: true,
+    orderBy: "startTime"
+  });
+
+  const events = res.data.items || [];
+  const found = events.find(ev => ev.extendedProperties?.private?.phone === String(phone));
+  if (!found) return false;
+
+  await calendar.events.delete({
+    auth,
+    calendarId: process.env.GOOGLE_CALENDAR_ID,
+    eventId: found.id
+  });
+  return true;
 }
