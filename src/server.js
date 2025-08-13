@@ -1,6 +1,3 @@
-server.js
-
-
 import express from "express";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
@@ -14,10 +11,9 @@ import { askCristina } from "./openai.js";
 import { sendWhatsAppText } from "./gupshup.js";
 import { safeLog } from "./redact.js";
 
-// >>> CALENDÁRIO
+// >>> CALENDÁRIO (somente nossas funções)
 import { createCalendarEvent } from "./google.esm.js";
-import { parse } from "date-fns";
-import { zonedTimeToUtc } from "date-fns-tz";
+import { parseCandidateDateTime } from "./utils.esm.js";
 // <<< FIM CALENDÁRIO
 
 dotenv.config();
@@ -217,38 +213,44 @@ async function handleInbound(req, res) {
     const answer = await askCristina({ userText: composed, userPhone: String(from) });
 
     // ======== SÓ CRIA EVENTO SE A SECRETÁRIA CONFIRMAR NESSE FORMATO ========
-    // Exemplo esperado:
     // "Pronto! Sua consulta com a Dra. Jenifer está agendada para o dia 30/08/25, horário 14:00."
     const confirmRegex =
-      /pronto!\s*sua\s+consulta\s+com\s+a\s+dra\.?\s+jenifer\s+est[aá]\s+agendada\s+para\s+o\s+dia\s+(\d{1,2}\/\d{1,2}\/\d{2})\s*,?\s*hor[áa]rio\s+(\d{1,2}:\d{2}|\d{1,2}h)/i;
+      /pronto!\s*sua\s+consulta\s+com\s+a\s+dra\.?\s+jenifer\s+est[aá]\s+agendada\s+para\s+o\s+dia\s+(\d{1,2})\/(\d{1,2})\/\d{2}\s*,?\s*hor[áa]rio\s+(\d{1,2}:\d{2}|\d{1,2}h)/i;
 
     if (answer) {
       const m = answer.match(confirmRegex);
       if (m) {
         try {
-          const tz = process.env.TZ || "America/Sao_Paulo";
-          const datePart = m[1];            // dd/mm/aa
-          let timePart = m[2];              // HH:MM ou Hh
+          const dd = m[1].padStart(2, "0");
+          const mm = m[2].padStart(2, "0");
+          let hhmm = m[3];
 
           // Normaliza "14h" -> "14:00"
-          if (/^\d{1,2}h$/i.test(timePart)) {
-            timePart = timePart.replace(/h$/i, ":00");
+          if (/^\d{1,2}h$/i.test(hhmm)) {
+            hhmm = hhmm.replace(/h$/i, ":00");
           }
 
-          // Monta string completa e converte para UTC ISO
-          const composedDateTime = `${datePart} ${timePart}`; // ex: 30/08/25 14:00
-          const local = parse(composedDateTime, "d/M/yy HH:mm", new Date());
-          const startUTC = zonedTimeToUtc(local, tz);
-          const endUTC = new Date(startUTC.getTime() + 60 * 60 * 1000);
+          // Monta um texto que o nosso parser (utils.esm.js) entende
+          // Obs.: ele usa o ANO ATUAL por padrão.
+          const textForParser = `${dd}/${mm} ${hhmm}`;
 
-          await createCalendarEvent({
-            summary: "Consulta - Dra. Jenifer (via WhatsApp)",
-            description: "Agendado automaticamente pela secretária virtual.",
-            startISO: startUTC.toISOString(),
-            endISO: endUTC.toISOString(),
-            attendees: [], // inclua e-mail somente com consentimento
-            location: process.env.CLINIC_ADDRESS || "Clínica",
-          });
+          const { found, startISO, endISO } = parseCandidateDateTime(
+            textForParser,
+            process.env.TZ || "America/Sao_Paulo"
+          );
+
+          if (found) {
+            await createCalendarEvent({
+              summary: "Consulta - Dra. Jenifer (via WhatsApp)",
+              description: "Agendado automaticamente pela secretária virtual.",
+              startISO,
+              endISO,
+              attendees: [], // inclua e-mail somente com consentimento
+              location: process.env.CLINIC_ADDRESS || "Clínica",
+            });
+          } else {
+            console.warn("Confirmação detectada, mas não consegui interpretar data/hora:", textForParser);
+          }
         } catch (e) {
           console.error("Erro ao criar evento no Google Calendar:", e?.response?.data || e);
         }
@@ -271,8 +273,8 @@ async function handleInbound(req, res) {
 // Routes mapping
 // =====================
 app.post("/webhook/gupshup", handleInbound);
-app.post("/healthz", handleInbound);
-app.post("/", handleInbound);
+app.post("/healthz", handleInbound); // fallback/alias POST
+app.post("/", handleInbound);        // fallback/alias
 
 // =====================
 // Start
