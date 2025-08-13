@@ -1,3 +1,6 @@
+server.js
+
+
 import express from "express";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
@@ -10,6 +13,12 @@ import getRawBody from "raw-body";
 import { askCristina } from "./openai.js";
 import { sendWhatsAppText } from "./gupshup.js";
 import { safeLog } from "./redact.js";
+
+// >>> CALENDÁRIO
+import { createCalendarEvent } from "./google.esm.js";
+import { parse } from "date-fns";
+import { zonedTimeToUtc } from "date-fns-tz";
+// <<< FIM CALENDÁRIO
 
 dotenv.config();
 const app = express();
@@ -35,8 +44,6 @@ app.use(limiter);
 // =====================================
 // Tolerant body parser (JSON + FORM-URL)
 // =====================================
-// Gupshup sandbox pode enviar como application/x-www-form-urlencoded.
-// Aceitamos ambos sem quebrar o webhook.
 app.use(async (req, res, next) => {
   const method = (req.method || "GET").toUpperCase();
   if (!["POST", "PUT", "PATCH"].includes(method)) return next();
@@ -53,19 +60,16 @@ app.use(async (req, res, next) => {
       const params = new URLSearchParams(text);
       const body = {};
       for (const [k, v] of params) body[k] = v;
-      // Se vier "payload" como string JSON, tenta abrir
       if (typeof body.payload === "string") {
         try { body.payload = JSON.parse(body.payload); } catch {}
       }
       req.body = body;
     } else {
-      // Outros content-types: seguimos sem bloquear
       req.body = {};
     }
     return next();
   } catch (e) {
     console.error("Parser error:", e);
-    // Não bloquear a entrega do webhook
     res.status(200).end();
   }
 });
@@ -83,14 +87,9 @@ app.get("/webhook/gupshup", (_req, res) => res.status(200).send("ok"));
 // Memória por telefone
 // =====================
 const MEMORY_TTL_HOURS = Number(process.env.MEMORY_TTL_HOURS || 24);
-// Mantém APENAS as últimas N mensagens (user+assistant combinadas)
 const MEMORY_MAX_MESSAGES = Number(process.env.MEMORY_MAX_MESSAGES || 20);
-// Teto por tamanho do contexto enviado ao modelo (em caracteres)
 const MAX_CONTEXT_CHARS = Number(process.env.MAX_CONTEXT_CHARS || 20000);
 
-/**
- * Map<string, { updatedAt: number, messages: Array<{role: 'user'|'assistant', content: string}> }>
- */
 const conversations = new Map();
 
 function nowMs() { return Date.now(); }
@@ -98,7 +97,6 @@ function nowMs() { return Date.now(); }
 function getConversation(phone) {
   const c = conversations.get(phone);
   if (!c) return null;
-  // TTL
   const ageHours = (nowMs() - c.updatedAt) / (1000 * 60 * 60);
   if (ageHours > MEMORY_TTL_HOURS) {
     conversations.delete(phone);
@@ -131,7 +129,6 @@ function resetConversation(phone) {
   conversations.delete(phone);
 }
 
-// Limpeza periódica (a cada 30 min)
 setInterval(() => {
   const cutoff = nowMs() - MEMORY_TTL_HOURS * 60 * 60 * 1000;
   for (const [k, v] of conversations.entries()) {
@@ -143,7 +140,6 @@ setInterval(() => {
 // Inbound handler
 // =====================
 async function handleInbound(req, res) {
-  // Sempre responder 200 imediatamente para evitar timeout
   res.status(200).end();
 
   try {
@@ -163,7 +159,7 @@ async function handleInbound(req, res) {
     const from = p?.sender?.phone || p?.source;
     if (!from) return;
 
-    // Extrai texto de acordo com o tipo
+    // Extrai texto
     let userText = "";
     if (msgType === "text") {
       userText = p?.payload?.text || "";
@@ -180,17 +176,13 @@ async function handleInbound(req, res) {
     safeLog("INBOUND", req.body);
 
     const trimmed = (userText || "").trim().toLowerCase();
-    // Comando de reset
     if (["reset", "reiniciar", "reiniciar conversa", "novo atendimento"].includes(trimmed)) {
       resetConversation(from);
-      await sendWhatsAppText({
-        to: from,
-        text: "Conversa reiniciada. Como posso ajudar?",
-      });
+      await sendWhatsAppText({ to: from, text: "Conversa reiniciada. Como posso ajudar?" });
       return;
     }
 
-    // Monta contexto a partir da memória (com teto por tamanho)
+    // Montagem de contexto para a IA
     const conv = getConversation(from);
     let composed;
 
@@ -198,10 +190,8 @@ async function handleInbound(req, res) {
       const lines = conv.messages.map(m =>
         m.role === "user" ? `Paciente: ${m.content}` : `Cristina: ${m.content}`
       );
-      // Inclui a nova fala do paciente
       lines.push(`Paciente: ${userText}`);
 
-      // Junta tudo e, se passar do teto, mantém as linhas mais recentes
       let body = lines.join("\n");
       if (body.length > MAX_CONTEXT_CHARS) {
         const rev = lines.slice().reverse();
@@ -223,10 +213,50 @@ async function handleInbound(req, res) {
       composed = userText;
     }
 
-    // Pergunta à Cristina
+    // Resposta da secretária (IA)
     const answer = await askCristina({ userText: composed, userPhone: String(from) });
 
-    // Atualiza memória (user -> assistant)
+    // ======== SÓ CRIA EVENTO SE A SECRETÁRIA CONFIRMAR NESSE FORMATO ========
+    // Exemplo esperado:
+    // "Pronto! Sua consulta com a Dra. Jenifer está agendada para o dia 30/08/25, horário 14:00."
+    const confirmRegex =
+      /pronto!\s*sua\s+consulta\s+com\s+a\s+dra\.?\s+jenifer\s+est[aá]\s+agendada\s+para\s+o\s+dia\s+(\d{1,2}\/\d{1,2}\/\d{2})\s*,?\s*hor[áa]rio\s+(\d{1,2}:\d{2}|\d{1,2}h)/i;
+
+    if (answer) {
+      const m = answer.match(confirmRegex);
+      if (m) {
+        try {
+          const tz = process.env.TZ || "America/Sao_Paulo";
+          const datePart = m[1];            // dd/mm/aa
+          let timePart = m[2];              // HH:MM ou Hh
+
+          // Normaliza "14h" -> "14:00"
+          if (/^\d{1,2}h$/i.test(timePart)) {
+            timePart = timePart.replace(/h$/i, ":00");
+          }
+
+          // Monta string completa e converte para UTC ISO
+          const composedDateTime = `${datePart} ${timePart}`; // ex: 30/08/25 14:00
+          const local = parse(composedDateTime, "d/M/yy HH:mm", new Date());
+          const startUTC = zonedTimeToUtc(local, tz);
+          const endUTC = new Date(startUTC.getTime() + 60 * 60 * 1000);
+
+          await createCalendarEvent({
+            summary: "Consulta - Dra. Jenifer (via WhatsApp)",
+            description: "Agendado automaticamente pela secretária virtual.",
+            startISO: startUTC.toISOString(),
+            endISO: endUTC.toISOString(),
+            attendees: [], // inclua e-mail somente com consentimento
+            location: process.env.CLINIC_ADDRESS || "Clínica",
+          });
+        } catch (e) {
+          console.error("Erro ao criar evento no Google Calendar:", e?.response?.data || e);
+        }
+      }
+    }
+    // ======== FIM DA REGRA DE CONFIRMAÇÃO ========
+
+    // Memória + resposta ao paciente
     appendMessage(from, "user", userText);
     if (answer) {
       appendMessage(from, "assistant", answer);
@@ -241,8 +271,8 @@ async function handleInbound(req, res) {
 // Routes mapping
 // =====================
 app.post("/webhook/gupshup", handleInbound);
-app.post("/healthz", handleInbound); // fallback/alias
-app.post("/", handleInbound);        // fallback/alias
+app.post("/healthz", handleInbound);
+app.post("/", handleInbound);
 
 // =====================
 // Start
