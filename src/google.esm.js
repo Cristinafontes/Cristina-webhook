@@ -77,6 +77,7 @@ export async function findCalendarEvents({
   let qTimeMin = timeMin;
   let qTimeMax = timeMax;
 
+  // Se recebemos um instante central (dateISO), criamos uma janela ±timeWindowMinutes
   if (dateISO) {
     const center = toDateSafe(dateISO);
     if (center) {
@@ -88,6 +89,7 @@ export async function findCalendarEvents({
     }
   }
 
+  // Sem janela explícita → próximos 30 dias
   if (!qTimeMin || !qTimeMax) {
     const now = new Date();
     const in30 = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
@@ -106,6 +108,7 @@ export async function findCalendarEvents({
 
   let items = res?.data?.items || [];
 
+  // Filtro local por termo, se fornecido
   if (q) {
     const needle = String(q).toLowerCase();
     items = items.filter(ev => {
@@ -114,6 +117,7 @@ export async function findCalendarEvents({
     });
   }
 
+  // Ordenar por proximidade do horário alvo
   if (dateISO) {
     items.sort((a, b) => {
       const da = diffMinutes(a.start?.dateTime || a.start?.date, dateISO);
