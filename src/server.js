@@ -9,7 +9,6 @@ import getRawBody from "raw-body";
 
 import { askCristina } from "./openai.js";
 import { sendWhatsAppText } from "./gupshup.js";
-import { safeLog } from "./redact.js";
 
 import { createCalendarEvent, findCalendarEvents, deleteCalendarEvent } from "./google.esm.js";
 import { parseCandidateDateTime, isCancelIntent } from "./utils.esm.js";
@@ -23,16 +22,39 @@ const PORT = process.env.PORT || 8080;
 app.use(helmet());
 app.use(compression());
 app.use(cors());
-app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
+app.use(morgan("tiny"));
 app.set("trust proxy", 1);
 app.use(rateLimit({ windowMs: 60 * 1000, max: 60 }));
 
+// ===== Helpers =====
+function maskPhone(p) {
+  try {
+    const s = String(p || "");
+    return s.replace(/(\+?\d{2})(\d{2})(\d{3})(\d{2,})/, (_, c, ddd, p1, p2) => `${c}${ddd}${p1}****`);
+  } catch { return "masked"; }
+}
+function formatPhoneBR(raw = "") {
+  const s = String(raw || "").replace(/\D/g, "");
+  const local = s.startsWith("55") ? s.slice(2) : s;
+  if (local.length === 11) return `(${local.slice(0,2)}) ${local.slice(2,7)}-${local.slice(7)}`;
+  if (local.length === 10) return `(${local.slice(0,2)}) ${local.slice(2,6)}-${local.slice(6)}`;
+  return raw;
+}
+
 // Memória curta para menu de cancelamento
 const pendingCancel = new Map();
-function setPendingCancel(from, options){ const expiresAt = Date.now() + 5*60*1000; pendingCancel.set(from,{expiresAt,options}); }
-function getPendingCancel(from){ const it = pendingCancel.get(from); if(!it) return null; if(Date.now()>it.expiresAt){ pendingCancel.delete(from); return null; } return it; }
+function setPendingCancel(from, options) {
+  const expiresAt = Date.now() + 5 * 60 * 1000;
+  pendingCancel.set(from, { expiresAt, options });
+}
+function getPendingCancel(from) {
+  const it = pendingCancel.get(from);
+  if (!it) return null;
+  if (Date.now() > it.expiresAt) { pendingCancel.delete(from); return null; }
+  return it;
+}
 
-// Body parser compatível com Gupshup (sem logar conteúdo sensível)
+// Body parser compatível com Gupshup (sem logar payloads)
 app.use(async (req, res, next) => {
   if (req.method !== "POST") return next();
   try {
@@ -51,12 +73,14 @@ app.use(async (req, res, next) => {
     } else {
       req.body = {};
     }
-    return next();
   } catch {
     req.body = {};
-    return next();
   }
+  next();
 });
+
+// Health check simples
+app.get("/healthz", (req, res) => res.status(200).send("OK"));
 
 // ===== Handler principal =====
 async function handleInbound(req, res) {
@@ -70,15 +94,25 @@ async function handleInbound(req, res) {
   const from = p?.sender?.phone || p?.source || "";
   const text = (p?.payload?.text || p?.payload?.payload?.text || "").trim();
 
+  // Log curto (sem dados sensíveis)
+  console.log("[MSG]", maskPhone(from), `"${text.slice(0,80)}"`);
+
   // A) Cancelamento - resposta de menu
   const prev = getPendingCancel(from);
   if (prev && /^\d+$/.test(text)) {
-    const idx = parseInt(text,10)-1;
+    const idx = parseInt(text, 10) - 1;
     const choice = prev.options[idx];
-    if (!choice) { await sendWhatsAppText(from,"Número inválido. Envie apenas o *número* da opção."); return; }
-    await deleteCalendarEvent(choice.id);
-    pendingCancel.delete(from);
-    await sendWhatsAppText(from,`✅ Agendamento cancelado: ${choice.label}`);
+    if (!choice) {
+      await sendWhatsAppText(from, "Número inválido. Envie apenas o *número* da opção.");
+      return;
+    }
+    try {
+      await deleteCalendarEvent(choice.id);
+      pendingCancel.delete(from);
+      await sendWhatsAppText(from, `✅ Agendamento cancelado: ${choice.label}`);
+    } catch {
+      await sendWhatsAppText(from, "Desculpe, não consegui cancelar agora. Tente novamente.");
+    }
     return;
   }
 
@@ -99,23 +133,28 @@ async function handleInbound(req, res) {
       events = events.filter(ev => re.test(ev.summary || ""));
     }
 
-    if (!events.length) { await sendWhatsAppText(from,"Não encontrei esse agendamento. Informe *data e horário* (ex.: 30/08 às 14:00)."); return; }
-    if (events.length === 1) { await deleteCalendarEvent(events[0].id); await sendWhatsAppText(from,`✅ Agendamento cancelado: ${events[0].summary}`); return; }
+    if (!events.length) {
+      await sendWhatsAppText(from, "Não encontrei esse agendamento. Informe *data e horário* (ex.: 30/08 às 14:00).");
+      return;
+    }
+    if (events.length === 1) {
+      await deleteCalendarEvent(events[0].id);
+      await sendWhatsAppText(from, `✅ Agendamento cancelado: ${events[0].summary}`);
+      return;
+    }
 
-    const options = events.slice(0,5).map(ev => ({ id: ev.id, label: ev.summary || "Consulta" }));
+    const options = events.slice(0, 5).map(ev => ({ id: ev.id, label: ev.summary || "Consulta" }));
     setPendingCancel(from, options);
-    const menu = options.map((o,i)=>`${i+1}. ${o.label}`).join("\n");
-    await sendWhatsAppText(from,`Encontrei mais de um agendamento:\n\n${menu}\n\nResponda com o *número* da opção.`);
+    const menu = options.map((o, i) => `${i + 1}. ${o.label}`).join("\n");
+    await sendWhatsAppText(from, `Encontrei mais de um agendamento:\n\n${menu}\n\nResponda com o *número* da opção.`);
     return;
   }
 
-  // C) Atendimento IA normal
-  const userText = text;
+  // C) Atendimento IA normal (com fallback seguro)
   let answer;
   try {
-    answer = await askCristina({ userText, userPhone: String(from) });
+    answer = await askCristina({ userText: text, userPhone: String(from) });
   } catch {
-    // fallback sem expor segredos
     answer = "Oi! Posso marcar, remarcar ou cancelar sua consulta. Diga *data* e *horário* (ex.: 30/08 às 14:00).";
   }
 
@@ -142,7 +181,9 @@ async function handleInbound(req, res) {
           attendees: [],
         });
       }
-    } catch {}
+    } catch {
+      // não derruba a resposta ao usuário
+    }
   }
 
   // Envia a resposta
@@ -150,18 +191,8 @@ async function handleInbound(req, res) {
   await sendWhatsAppText(from, answer);
 }
 
-// Utilitários
-function formatPhoneBR(raw="") {
-  const s = String(raw || "").replace(/\D/g, "");
-  const local = s.startsWith("55") ? s.slice(2) : s;
-  if (local.length === 11) return `(${local.slice(0,2)}) ${local.slice(2,7)}-${local.slice(7)}`;
-  if (local.length === 10) return `(${local.slice(0,2)}) ${local.slice(2,6)}-${local.slice(6)}`;
-  return raw;
-}
-
 // Rotas
 app.post("/webhook/gupshup", handleInbound);
-app.post("/healthz", handleInbound);
 app.post("/", handleInbound);
 
 app.listen(PORT, () => console.log(`Server listening on :${PORT}`));
