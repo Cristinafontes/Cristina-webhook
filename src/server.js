@@ -30,7 +30,7 @@ app.use(rateLimit({ windowMs: 60 * 1000, max: 60 }));
 function maskPhone(p) {
   try {
     const s = String(p || "");
-    return s.replace(/(\+?\d{2})(\d{2})(\d{3})(\d{2,})/, (_, c, ddd, p1, p2) => `${c}${ddd}${p1}****`);
+    return s.replace(/(\+?\d{2})(\d{2})(\d{3})(\d{2,})/, (_, c, ddd, p1) => `${c}${ddd}${p1}****`);
   } catch { return "masked"; }
 }
 function formatPhoneBR(raw = "") {
@@ -66,9 +66,7 @@ app.use(async (req, res, next) => {
       const params = new URLSearchParams(text);
       const body = {};
       for (const [k, v] of params) body[k] = v;
-      if (typeof body.payload === "string") {
-        try { body.payload = JSON.parse(body.payload); } catch {}
-      }
+      if (typeof body.payload === "string") { try { body.payload = JSON.parse(body.payload); } catch {} }
       req.body = body;
     } else {
       req.body = {};
@@ -79,12 +77,13 @@ app.use(async (req, res, next) => {
   next();
 });
 
-// Health check simples
+// Health check e GET de diagnóstico (para evitar 404 ao abrir no navegador)
 app.get("/healthz", (req, res) => res.status(200).send("OK"));
+app.get("/webhook/gupshup", (req, res) => res.status(200).send("OK"));
 
-// ===== Handler principal =====
+// ===== Handler principal (POST) =====
 async function handleInbound(req, res) {
-  // responde 200 cedo
+  // responde 200 cedo (Gupshup espera retorno rápido)
   res.status(200).end();
 
   const eventType = req.body?.type || req.body?.event || null;
@@ -97,7 +96,7 @@ async function handleInbound(req, res) {
   // Log curto (sem dados sensíveis)
   console.log("[MSG]", maskPhone(from), `"${text.slice(0,80)}"`);
 
-  // A) Cancelamento - resposta de menu
+  // A) Cancelamento - resposta de menu (usuário digitou 1,2,3…)
   const prev = getPendingCancel(from);
   if (prev && /^\d+$/.test(text)) {
     const idx = parseInt(text, 10) - 1;
@@ -181,9 +180,7 @@ async function handleInbound(req, res) {
           attendees: [],
         });
       }
-    } catch {
-      // não derruba a resposta ao usuário
-    }
+    } catch { /* não derruba a resposta */ }
   }
 
   // Envia a resposta
