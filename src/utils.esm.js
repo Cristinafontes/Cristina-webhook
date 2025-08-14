@@ -60,8 +60,8 @@ export function parseCandidateDateTime(text, _tz = "America/Sao_Paulo") {
 }
 
 
-// Detecta intenção de cancelamento em linguagem natural simples
+// Detecta intenção de cancelamento
 export function isCancelIntent(text = "") {
-  const t = String(text || "").toLowerCase();
+  const t = String(text||"").toLowerCase();
   return /(^|\b)(cancelar|desmarcar|remover|excluir|nao vou|não vou|quero cancelar|preciso cancelar|cancelamento)(\b|$)/.test(t);
 }
