@@ -12,10 +12,15 @@ export async function sendWhatsAppText(phone, message) {
     srcName: process.env.GUPSHUP_APP_NAME
   });
 
-  await axios.post(url, data, {
-    headers: {
-      "apikey": process.env.GUPSHUP_API_KEY,
-      "Content-Type": "application/x-www-form-urlencoded"
-    }
-  });
+  try {
+    const res = await axios.post(url, data, {
+      headers: {
+        "apikey": process.env.GUPSHUP_API_KEY,
+        "Content-Type": "application/x-www-form-urlencoded"
+      }
+    });
+    console.log("Gupshup response:", res.data);
+  } catch (err) {
+    console.error("Erro ao enviar mensagem para Gupshup:", err.response?.data || err.message);
+  }
 }
