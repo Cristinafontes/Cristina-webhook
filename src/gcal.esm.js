@@ -1,4 +1,4 @@
-import { google } from "googleapis";
+import { google } from "googleapis"
 
 /** Lê envs com e sem prefixo GOOGLE_ */
 function env(a, b) { return process.env[a] || process.env[b] || ""; }
@@ -28,10 +28,10 @@ function parseBRDateTime(message) {
   if (!message) return null;
   let norm = String(message)
     .toLowerCase()
-    .replace(/hor[aá]rio/gi, "")
-    .replace(/\bàs\b/gi, "")
-    .replace(/,/g, " ")
-    .replace(/\s{2,}/g, " ")
+    .replace(/hor[aá]rio/gi, "")   // remove "horario" / "horário"
+    .replace(/\bàs\b/gi, "")       // remove "às"
+    .replace(/,/g, " ")            // troca vírgula por espaço
+    .replace(/\s{2,}/g, " ")       // remove espaços extras
     .trim();
 
   // 1) HH:MM
@@ -62,7 +62,9 @@ function parseBRDateTime(message) {
 /** Cancela o primeiro evento em ±30min do horário extraído. */
 export async function cancelEventFromMessage(message) {
   const parsed = parseBRDateTime(message);
-  if (!parsed) return { ok: false, cancelled: false, error: "Não consegui entender a data/horário na mensagem." };
+  if (!parsed) {
+    return { ok: false, cancelled: false, error: "Não consegui entender a data/horário na mensagem." };
+  }
 
   try {
     const a = auth();
