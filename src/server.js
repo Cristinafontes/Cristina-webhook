@@ -158,21 +158,64 @@ function extractPhoneFromText(text) {
   return has55 ? ("55" + onlyDigits.replace(/^55/, "")) : onlyDigits;
 }
 
+// Lê um nome a partir de texto livre (com ou sem rótulo "Nome" / "Nome completo")
+function extractNameFromText(text) {
+  if (!text) return null;
+  const t = String(text).trim();
 
+  // 1) Preferência: linhas rotuladas
+  //    Ex.: "Nome completo: Maria da Silva", "Nome: João Pereira"
+  const labeled = t.match(/^\s*nome(?:\s+completo)?\s*[:\-]\s*(.+)$/im);
+  if (labeled && labeled[1]) {
+    const v = labeled[1].trim();
+    if (v && v.length >= 2) return v;
+  }
+
+  // 2) Heurística: linha isolada com 2+ palavras iniciando por letra
+  //    Ex.: "Maria da Silva", "João P. Mendes"
+  const lines = t.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  for (const line of lines) {
+    // ignora linhas que são números, horários ou telefones
+    if (/\d{2}\/\d{2}/.test(line)) continue;                      // datas
+    if (/\d/.test(line)) continue;                                // números em geral
+    if (/^(idade|telefone|motivo)\b/i.test(line)) continue;       // outros campos
+    if (line.split(/\s+/).length >= 2 && /^[A-Za-zÁ-ú]/.test(line)) {
+      return line;
+    }
+  }
+
+  return null;
+}
 function extractPatientInfo({ payload, phone, conversation }) {
-  const name = (payload?.sender?.name || "Paciente (WhatsApp)").toString().trim();
-
-  // 1) Tenta pegar o telefone que o PACIENTE informou nas mensagens (prioridade)
-  let phoneFromUser = null;
+  // ====== NOME ======
+  let nameFromUser = null;
   const msgs = conversation?.messages || [];
-  for (let i = msgs.length - 1; i >= 0; i--) {
+
+  // Procura nome nas mensagens do usuário (de trás pra frente)
+  for (let i = msgs.length - 1; i >= 0 && !nameFromUser; i--) {
+    const m = msgs[i];
+    if (m.role !== "user") continue;
+    nameFromUser = extractNameFromText(m.content);
+  }
+  // Se não achou, tenta no payload mais recente
+  if (!nameFromUser) {
+    const lastText = (payload?.payload?.text ||
+                      payload?.payload?.title ||
+                      payload?.payload?.postbackText ||
+                      payload?.text ||
+                      "") + "";
+    nameFromUser = extractNameFromText(lastText);
+  }
+  // Fallback: nome do WhatsApp
+  const name = (nameFromUser || payload?.sender?.name || "Paciente (WhatsApp)").toString().trim();
+
+  // ====== TELEFONE (sua lógica com prioridade para o que o paciente digitou) ======
+  let phoneFromUser = null;
+  for (let i = msgs.length - 1; i >= 0 && !phoneFromUser; i--) {
     const m = msgs[i];
     if (m.role !== "user") continue;
     phoneFromUser = extractPhoneFromText(m.content);
-    if (phoneFromUser) break;
   }
-
-  // 2) Se não achou nas mensagens, tenta no payload atual (texto/postback)
   if (!phoneFromUser) {
     const lastText = (payload?.payload?.text ||
                       payload?.payload?.title ||
@@ -181,23 +224,17 @@ function extractPatientInfo({ payload, phone, conversation }) {
                       "") + "";
     phoneFromUser = extractPhoneFromText(lastText);
   }
-
-  // 3) Fallback: telefone do remetente (WhatsApp)
   const rawPhone = phoneFromUser || phone || payload?.sender?.phone || payload?.source;
-
-  // 4) Formata bonitinho para Brasil (sempre terá algo por causa do fallback)
   const phoneFormatted = formatBrazilPhone(rawPhone);
 
-  // ===== Motivo (mantém sua lógica atual; ajuste se já tiver a versão com inferência) =====
+  // ====== MOTIVO (mantém sua lógica; acrescente inferência se já adicionou) ======
   let reason = null;
-  // Procura “Motivo: …” no histórico
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i];
     if (m.role !== "user") continue;
     const found = m.content?.match?.(/motivo\s*[:\-]\s*(.+)/i);
     if (found) { reason = found[1].trim(); break; }
   }
-  // Se não achar, tenta no texto atual
   if (!reason) {
     const lastText =
       (payload?.payload?.text ||
@@ -207,18 +244,13 @@ function extractPatientInfo({ payload, phone, conversation }) {
        "") + "";
     const m = lastText.match(/motivo\s*[:\-]\s*(.+)/i);
     if (m) reason = m[1].trim();
+    // Se você já tem inferReasonFromText, pode usar como fallback:
+    // if (!reason) reason = inferReasonFromText(lastText);
   }
-  // (Opcional) Se você já adicionou a inferência de motivo (dor lombar, avaliação pré-anestésica, etc),
-  // chame aqui como fallback: reason = reason || inferReasonFromText(últimoTexto);
 
-  return {
-    name,
-    phoneFormatted,
-    reason: reason || "Motivo não informado",
-  };
+  return { name, phoneFormatted, reason: reason || "Motivo não informado" };
 }
 
-// Tenta entender o motivo a partir de frases como "dor lombar", "avaliação pré-anestésica" etc.
 function inferReasonFromText(raw) {
   const text = String(raw || "");
   const norm = text
