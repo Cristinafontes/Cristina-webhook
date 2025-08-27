@@ -109,6 +109,59 @@ function ensureConversation(phone) {
   return c;
 }
 
+function formatBrazilPhone(raw) {
+  const digits = String(raw || "").replace(/\D/g, "");
+  const national = digits.startsWith("55") ? digits.slice(2) : digits;
+  if (national.length < 10) return digits || "Telefone não informado";
+
+  const ddd = national.slice(0, 2);
+  const rest = national.slice(2);
+
+  // 9 dígitos (celular) => 9XXXX-XXXX
+  if (rest.length === 9) {
+    return `(${ddd}) ${rest[0]}${rest.slice(1, 5)}-${rest.slice(5)}`;
+  }
+  // 8 dígitos (fixo) => XXXX-XXXX
+  if (rest.length === 8) {
+    return `(${ddd}) ${rest.slice(0, 4)}-${rest.slice(4)}`;
+  }
+  // fallback (10+ dígitos)
+  return `(${ddd}) ${rest}`;
+}
+
+/**
+ * Tenta extrair Nome, Telefone e Motivo.
+ * - Nome e Telefone: do próprio payload do WhatsApp (quando possível)
+ * - Motivo: procura por linhas no histórico do paciente do tipo "Motivo: ...".
+ */
+function extractPatientInfo({ payload, phone, conversation }) {
+  const name = (payload?.sender?.name || "Paciente (WhatsApp)").toString().trim();
+  const phoneFormatted = formatBrazilPhone(phone || payload?.sender?.phone || payload?.source);
+
+  let reason = null;
+  const msgs = conversation?.messages || [];
+  // Varre de trás pra frente só mensagens do usuário
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (m.role !== "user") continue;
+    // Procura “Motivo: ...” (com ou sem maiúsculas)
+    const found = m.content.match(/motivo\s*[:\-]\s*(.+)/i);
+    if (found) { reason = found[1].trim(); break; }
+  }
+
+  // Última tentativa: usar o texto cru desta mensagem (se vier marcado)
+  if (!reason) {
+    const lastText = (payload?.payload?.text || payload?.payload?.title || payload?.payload?.postbackText || "").trim();
+    const f2 = lastText.match(/motivo\s*[:\-]\s*(.+)/i);
+    if (f2) reason = f2[1].trim();
+  }
+
+  return {
+    name,
+    phoneFormatted,
+    reason: reason || "Motivo não informado",
+  };
+}
 function trimToLastN(arr, n) {
   if (arr.length <= n) return arr;
   return arr.slice(arr.length - n);
