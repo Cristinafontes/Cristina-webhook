@@ -181,27 +181,45 @@ function isLikelyName(s) {
 // Lê nome a partir de texto, rejeitando frases do tipo "quero presencial" etc.
 function extractNameFromText(text) {
   if (!text) return null;
-  const t = String(text);
+  const t = String(text).trim();
 
-  // 1) Preferência: rótulos "Nome:" / "Nome completo:"
+  // Regras rápidas para evitar pegar frases operacionais
+  const STOP = /\b(quero|prefiro|preferiria|presencial|telemedicina|avaliac[aã]o|remarcar|cancelar|agendar|hor[aá]rio|modalidade|dor|consulta|medicina)\b/i;
+
+  // 1) Etiquetas explícitas: "Nome:" / "Nome completo:"
   const labeled = t.match(/^\s*nome(?:\s+completo)?\s*[:\-]\s*([^\n]+)$/im);
   if (labeled && labeled[1]) {
     const v = labeled[1].trim();
     if (isLikelyName(v)) return toTitleCase(v);
   }
 
-  // 2) Heurística por linhas, com stopwords para evitar modalidade/intenção
-  const STOP = /\b(quero|prefiro|preferiria|presencial|telemedicina|confirmo|agendar|cancelar|remarcar|consulta|hor[aá]rio|modalidade|avaliac[aã]o|pré?-?anest|medicina|dor)\b/i;
+  // 2) Frases do tipo "meu nome é Fulano", "me chamo Fulana", "sou Ciclano"
+  const sayMyName =
+    t.match(/\b(?:meu\s+nome\s+é|me\s+chamo|sou)\s+([A-Za-zÀ-ÿ'’. -]{2,60})\b/i);
+  if (sayMyName && sayMyName[1]) {
+    const v = sayMyName[1].replace(/[.,;].*$/, "").trim();
+    if (!STOP.test(v) && isLikelyName(v)) return toTitleCase(v);
+  }
 
+  // 3) Heurística por linhas (cada linha sozinha parecendo nome)
   const lines = t.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
   for (const line of lines) {
-    if (/\d/.test(line)) continue; // ignora linhas com números (telefones/datas)
+    if (/\d/.test(line)) continue; // ignora números (telefones/datas)
     if (STOP.test(line)) continue; // ignora frases operacionais
-    if (/^(idade|telefone|motivo|dia)\b/i.test(line)) continue; // ignora rótulos de outros campos
+    if (/^(idade|telefone|motivo|dia|data|hor[aá]rio)\b/i.test(line)) continue; // outros campos
     if (isLikelyName(line)) return toTitleCase(line);
   }
+
+  // 4) Tentativa final: primeira sequência que pareça nome, sem números
+  const loose = t.match(/\b([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'’. -]{1,60})\b/);
+  if (loose && loose[1]) {
+    const v = loose[1].trim();
+    if (!STOP.test(v) && isLikelyName(v)) return toTitleCase(v);
+  }
+
   return null;
 }
+
 // Extrai o motivo a partir de texto livre, MAS restringe às duas opções.
 // Aceita variações com/sem acento, abreviações e respostas "1"/"2".
 function extractReasonChoice(text) {
@@ -242,13 +260,17 @@ function extractReasonChoice(text) {
 function extractPatientInfo({ payload, phone, conversation }) {
   const msgs = conversation?.messages || [];
 
-    // ====== NOME (prioriza o digitado pelo paciente, com filtro anti-"quero presencial") ======
+    // ====== NOME (prioriza o informado pelo paciente; fallback: nome do WhatsApp) ======
   let nameFromUser = null;
+
+  // 1) Varre o histórico da conversa do paciente (mensagens role=user)
   for (let i = msgs.length - 1; i >= 0 && !nameFromUser; i--) {
     const m = msgs[i];
     if (m.role !== "user") continue;
     nameFromUser = extractNameFromText(m.content);
   }
+
+  // 2) Se ainda não achou, tenta no payload atual
   if (!nameFromUser) {
     const lastText = (
       payload?.payload?.text ||
@@ -260,16 +282,20 @@ function extractPatientInfo({ payload, phone, conversation }) {
     nameFromUser = extractNameFromText(lastText);
   }
 
-  // Fallback: nome do WhatsApp
-  let name = (nameFromUser || payload?.sender?.name || "Paciente (WhatsApp)") + "";
-  name = name.trim();
+  // 3) Decide o nome final
+  //    - Se o nome informado pelo paciente for válido, usa ele.
+  //    - Caso contrário, usa o nome do WhatsApp, se for um nome plausível.
+  //    - Último fallback: "Paciente (WhatsApp)"
+  const BAD_NAME = /\b(quero|presencial|telemedicina|agendar|cancelar|remarcar|consulta|dor)\b/i;
 
-  // Se o "nome" capturado parecer frase operacional, volta pro sender.name
-  const BAD_NAME = /\b(quero|presencial|telemedicina|agendar|cancelar|remarcar|consulta)\b/i;
-  if (BAD_NAME.test(name) || !isLikelyName(name)) {
+  let nameFinal = null;
+  if (nameFromUser && !BAD_NAME.test(nameFromUser) && isLikelyName(nameFromUser)) {
+    nameFinal = nameFromUser.trim();
+  } else {
     const senderName = (payload?.sender?.name || "").toString().trim();
-    name = isLikelyName(senderName) ? senderName : "Paciente (WhatsApp)";
+    nameFinal = isLikelyName(senderName) ? senderName : "Paciente (WhatsApp)";
   }
+
   // ====== TELEFONE (prioriza o informado pelo paciente) ======
   let phoneFromUser = null;
   for (let i = msgs.length - 1; i >= 0 && !phoneFromUser; i--) {
