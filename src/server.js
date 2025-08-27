@@ -225,29 +225,28 @@ function extractReasonChoice(text) {
 }
 
 function extractPatientInfo({ payload, phone, conversation }) {
-  // ====== NOME ======
-  let nameFromUser = null;
   const msgs = conversation?.messages || [];
 
-  // Procura nome nas mensagens do usuário (de trás pra frente)
+  // ====== NOME (prioriza o digitado pelo paciente) ======
+  let nameFromUser = null;
   for (let i = msgs.length - 1; i >= 0 && !nameFromUser; i--) {
     const m = msgs[i];
     if (m.role !== "user") continue;
     nameFromUser = extractNameFromText(m.content);
   }
-  // Se não achou, tenta no payload mais recente
   if (!nameFromUser) {
-    const lastText = (payload?.payload?.text ||
-                      payload?.payload?.title ||
-                      payload?.payload?.postbackText ||
-                      payload?.text ||
-                      "") + "";
+    const lastText = (
+      payload?.payload?.text ||
+      payload?.payload?.title ||
+      payload?.payload?.postbackText ||
+      payload?.text ||
+      ""
+    ) + "";
     nameFromUser = extractNameFromText(lastText);
   }
-  // Fallback: nome do WhatsApp
   const name = (nameFromUser || payload?.sender?.name || "Paciente (WhatsApp)").toString().trim();
 
-  // ====== TELEFONE (sua lógica com prioridade para o que o paciente digitou) ======
+  // ====== TELEFONE (prioriza o informado pelo paciente) ======
   let phoneFromUser = null;
   for (let i = msgs.length - 1; i >= 0 && !phoneFromUser; i--) {
     const m = msgs[i];
@@ -255,58 +254,56 @@ function extractPatientInfo({ payload, phone, conversation }) {
     phoneFromUser = extractPhoneFromText(m.content);
   }
   if (!phoneFromUser) {
-    const lastText = (payload?.payload?.text ||
-                      payload?.payload?.title ||
-                      payload?.payload?.postbackText ||
-                      payload?.text ||
-                      "") + "";
+    const lastText = (
+      payload?.payload?.text ||
+      payload?.payload?.title ||
+      payload?.payload?.postbackText ||
+      payload?.text ||
+      ""
+    ) + "";
     phoneFromUser = extractPhoneFromText(lastText);
   }
   const rawPhone = phoneFromUser || phone || payload?.sender?.phone || payload?.source;
   const phoneFormatted = formatBrazilPhone(rawPhone);
 
-  // ====== MOTIVO (mantém sua lógica; acrescente inferência se já adicionou) ======
   // ====== MOTIVO (somente duas opções) ======
   let reason = null;
 
-  // 1) Procura nas mensagens do usuário (de trás pra frente)
-  const msgs = conversation?.messages || [];
+  // 1) Procura no histórico
   for (let i = msgs.length - 1; i >= 0 && !reason; i--) {
     const m = msgs[i];
     if (m.role !== "user") continue;
 
-    // Se vier no formato "Motivo: ..." ainda funciona:
     const labeled = m.content?.match?.(/motivo\s*[:\-]\s*(.+)/i);
     if (labeled?.[1]) {
       reason = extractReasonChoice(labeled[1]);
       if (reason) break;
     }
-
-    // Tenta inferir diretamente do texto
-    reason = extractReasonChoice(m.content);
+    if (!reason) reason = extractReasonChoice(m.content);
   }
 
-  // 2) Se não achou no histórico, tenta no payload atual
+  // 2) Procura no payload atual
   if (!reason) {
-    const lastText =
-      (payload?.payload?.text ||
-       payload?.payload?.title ||
-       payload?.payload?.postbackText ||
-       payload?.text ||
-       "") + "";
-    // Primeiro respeita "Motivo: ..."
+    const lastText = (
+      payload?.payload?.text ||
+      payload?.payload?.title ||
+      payload?.payload?.postbackText ||
+      payload?.text ||
+      ""
+    ) + "";
     const labeled = lastText.match(/motivo\s*[:\-]\s*(.+)/i);
     if (labeled?.[1]) {
       reason = extractReasonChoice(labeled[1]);
     }
-    // Depois tenta inferir do texto bruto
     if (!reason) reason = extractReasonChoice(lastText);
   }
 
-  // 3) Fallback final (garantir sempre algum valor legível no calendário)
-  if (!reason) {
-    reason = "Medicina da Dor"; // ou "Motivo não informado" se preferir não assumir
-  }
+  // 3) Fallback garantido
+  if (!reason) reason = "Medicina da Dor";
+
+  return { name, phoneFormatted, reason };
+}
+
 
 function inferReasonFromText(raw) {
   const text = String(raw || "");
