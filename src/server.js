@@ -242,34 +242,105 @@ function extractReasonChoice(text) {
 function extractPatientInfo({ payload, phone, conversation }) {
   const msgs = conversation?.messages || [];
 
-    // ====== NOME (prioriza o digitado pelo paciente, com filtro anti-"quero presencial") ======
-  let nameFromUser = null;
+// ====== NOME (prioriza texto digitado pelo paciente; fallback: nome do WhatsApp) ======
+let name = null; // garante que 'name' exista no escopo
+
+// Helpers locais
+const toTitleCaseLocal = (str) =>
+  String(str)
+    .toLowerCase()
+    .replace(/\b([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'’.-]*)\b/g, (w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .replace(/\s+/g, " ")
+    .trim();
+
+const isLikelyNameLocal = (s) => {
+  if (!s) return false;
+  const v = String(s).trim();
+
+  if ((v.match(/\d/g) || []).length >= 1) return false;      // rejeita se tiver número
+  if (v.length < 3 || v.length > 80) return false;
+  if (!/^[A-Za-zÀ-ÿ'’. -]+$/.test(v)) return false;
+
+  const parts = v.split(/\s+/).filter(Boolean);
+  if (parts.length < 1 || parts.length > 5) return false;
+
+  const bad = /\b(agendar|consulta|presencial|telemedicina|quero|cancelar|remarcar|hor[áa]rio|dor|avaliac[aã]o|idade|telefone|motivo|endereco|endereço|data)\b/i;
+  if (bad.test(v)) return false;
+
+  return true;
+};
+
+const extractNameLocal = (text) => {
+  if (!text) return null;
+  const t = String(text).trim();
+
+  // 1) "Nome: Fulano" / "Nome completo: Fulana"
+  const labeled = t.match(/^\s*nome(?:\s+completo)?\s*[:\-]\s*([^\n]+)$/im);
+  if (labeled?.[1] && isLikelyNameLocal(labeled[1])) return toTitleCaseLocal(labeled[1]);
+
+  // 2) "meu nome é Fulano", "me chamo Beltrano", "sou Ciclano"
+  const sayMyName = t.match(/\b(?:meu\s+nome\s+é|me\s+chamo|sou)\s+([A-Za-zÀ-ÿ'’. -]{2,80})\b/i);
+  if (sayMyName?.[1]) {
+    const v = sayMyName[1].replace(/[.,;].*$/, "").trim();
+    if (isLikelyNameLocal(v)) return toTitleCaseLocal(v);
+  }
+
+  // 3) Linha isolada com possível nome
+  const lines = t.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  for (const line of lines) {
+    if (/^[A-Za-zÀ-ÿ'’. -]+$/.test(line) && isLikelyNameLocal(line)) {
+      return toTitleCaseLocal(line);
+    }
+  }
+
+  // 4) Nome embutido em frase (ex.: "agendar consulta com Jessica Oliveira dia 23/09")
+  const candidates = [];
+  const re = /([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'’.-]+(?:\s+[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'’.-]+){1,4})/g;
+  let m;
+  while ((m = re.exec(t)) !== null) {
+    const cand = m[1].trim();
+    if (isLikelyNameLocal(cand)) candidates.push(cand);
+  }
+  if (candidates.length) {
+    candidates.sort((a, b) => b.split(/\s+/).length - a.split(/\s+/).length);
+    return toTitleCaseLocal(candidates[0]);
+  }
+
+  return null;
+};
+
+// 1) Varre histórico do usuário
+let nameFromUser = null;
+if (Array.isArray(msgs)) {
   for (let i = msgs.length - 1; i >= 0 && !nameFromUser; i--) {
     const m = msgs[i];
-    if (m.role !== "user") continue;
-    nameFromUser = extractNameFromText(m.content);
+    if (!m || m.role !== "user") continue;
+    nameFromUser = extractNameLocal(m.content);
   }
-  if (!nameFromUser) {
-    const lastText = (
-      payload?.payload?.text ||
-      payload?.payload?.title ||
-      payload?.payload?.postbackText ||
-      payload?.text ||
-      ""
-    ) + "";
-    nameFromUser = extractNameFromText(lastText);
-  }
+}
 
-  // Fallback: nome do WhatsApp
-  let name = (nameFromUser || payload?.sender?.name || "Paciente (WhatsApp)") + "";
-  name = name.trim();
+// 2) Se ainda não achou, tenta no payload atual
+if (!nameFromUser) {
+  const lastText = (
+    payload?.payload?.text ||
+    payload?.payload?.title ||
+    payload?.payload?.postbackText ||
+    payload?.text ||
+    ""
+  ) + "";
+  nameFromUser = extractNameLocal(lastText);
+}
 
-  // Se o "nome" capturado parecer frase operacional, volta pro sender.name
-  const BAD_NAME = /\b(quero|presencial|telemedicina|agendar|cancelar|remarcar|consulta)\b/i;
-  if (BAD_NAME.test(name) || !isLikelyName(name)) {
-    const senderName = (payload?.sender?.name || "").toString().trim();
-    name = isLikelyName(senderName) ? senderName : "Paciente (WhatsApp)";
-  }
+// 3) Decide o nome final
+if (nameFromUser && isLikelyNameLocal(nameFromUser)) {
+  name = nameFromUser.trim();
+} else {
+  const senderName = (payload?.sender?.name || "").toString().trim();
+  name = isLikelyNameLocal(senderName) ? senderName : "Paciente (WhatsApp)";
+}
+
+// (opcional) log para ver nos Deploy Logs
+console.log("[NAME PICKED]", name);
   // ====== TELEFONE (prioriza o informado pelo paciente) ======
   let phoneFromUser = null;
   for (let i = msgs.length - 1; i >= 0 && !phoneFromUser; i--) {
