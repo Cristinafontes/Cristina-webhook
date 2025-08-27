@@ -186,6 +186,44 @@ function extractNameFromText(text) {
 
   return null;
 }
+
+// Extrai o motivo a partir de texto livre, MAS restringe às duas opções.
+// Aceita variações com/sem acento, abreviações e respostas "1"/"2".
+function extractReasonChoice(text) {
+  if (!text) return null;
+  const raw = String(text);
+  const norm = raw
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // remove acentos
+    .toLowerCase();
+
+  // Mapeia respostas numéricas
+  // Ex.: "1", "opcao 1", "1) medicina da dor"
+  const isOne  = /\b(?:1|opcao\s*1|opção\s*1)\b/.test(norm);
+  const isTwo  = /\b(?:2|opcao\s*2|opção\s*2)\b/.test(norm);
+  if (isOne) return "Medicina da Dor";
+  if (isTwo) return "Avaliação Pré-anestésica";
+
+  // Palavras-chave para "Avaliação Pré-anestésica"
+  if (
+    /\b(pre[\s\-]?anest|avaliac\w*\s+pre[\s\-]?anest|preop|pre[\s\-]?operatori)/.test(norm) ||
+    /\banestes(ia|ic[ao])\b/.test(norm)
+  ) {
+    return "Avaliação Pré-anestésica";
+  }
+
+  // Palavras-chave para "Medicina da Dor"
+  if (
+    /\bmedicina\s+da\s+dor\b/.test(norm) ||
+    /\bdor(es)?\b/.test(norm) ||
+    /\bneuropat|algia|lombar|cervical|ombro|joelho|coluna|cefale/.test(norm)
+  ) {
+    return "Medicina da Dor";
+  }
+
+  // Caso não detecte nada, retorna null para permitir outros fallbacks
+  return null;
+}
+
 function extractPatientInfo({ payload, phone, conversation }) {
   // ====== NOME ======
   let nameFromUser = null;
@@ -228,13 +266,27 @@ function extractPatientInfo({ payload, phone, conversation }) {
   const phoneFormatted = formatBrazilPhone(rawPhone);
 
   // ====== MOTIVO (mantém sua lógica; acrescente inferência se já adicionou) ======
+  // ====== MOTIVO (somente duas opções) ======
   let reason = null;
-  for (let i = msgs.length - 1; i >= 0; i--) {
+
+  // 1) Procura nas mensagens do usuário (de trás pra frente)
+  const msgs = conversation?.messages || [];
+  for (let i = msgs.length - 1; i >= 0 && !reason; i--) {
     const m = msgs[i];
     if (m.role !== "user") continue;
-    const found = m.content?.match?.(/motivo\s*[:\-]\s*(.+)/i);
-    if (found) { reason = found[1].trim(); break; }
+
+    // Se vier no formato "Motivo: ..." ainda funciona:
+    const labeled = m.content?.match?.(/motivo\s*[:\-]\s*(.+)/i);
+    if (labeled?.[1]) {
+      reason = extractReasonChoice(labeled[1]);
+      if (reason) break;
+    }
+
+    // Tenta inferir diretamente do texto
+    reason = extractReasonChoice(m.content);
   }
+
+  // 2) Se não achou no histórico, tenta no payload atual
   if (!reason) {
     const lastText =
       (payload?.payload?.text ||
@@ -242,14 +294,19 @@ function extractPatientInfo({ payload, phone, conversation }) {
        payload?.payload?.postbackText ||
        payload?.text ||
        "") + "";
-    const m = lastText.match(/motivo\s*[:\-]\s*(.+)/i);
-    if (m) reason = m[1].trim();
-    // Se você já tem inferReasonFromText, pode usar como fallback:
-    // if (!reason) reason = inferReasonFromText(lastText);
+    // Primeiro respeita "Motivo: ..."
+    const labeled = lastText.match(/motivo\s*[:\-]\s*(.+)/i);
+    if (labeled?.[1]) {
+      reason = extractReasonChoice(labeled[1]);
+    }
+    // Depois tenta inferir do texto bruto
+    if (!reason) reason = extractReasonChoice(lastText);
   }
 
-  return { name, phoneFormatted, reason: reason || "Motivo não informado" };
-}
+  // 3) Fallback final (garantir sempre algum valor legível no calendário)
+  if (!reason) {
+    reason = "Medicina da Dor"; // ou "Motivo não informado" se preferir não assumir
+  }
 
 function inferReasonFromText(raw) {
   const text = String(raw || "");
