@@ -134,32 +134,70 @@ function formatBrazilPhone(raw) {
  * - Nome e Telefone: do próprio payload do WhatsApp (quando possível)
  * - Motivo: procura por linhas no histórico do paciente do tipo dor... avaliação...  (com ou sem maiúsculas)".
  */
+// Captura telefone de um texto livre (com ou sem "Telefone:"), aceitando formatos BR.
+// Retorna string só com dígitos (com 55 se vier), ou null se não achar.
+
+function extractPhoneFromText(text) {
+  if (!text) return null;
+  const t = String(text);
+
+  // 1) Preferência: linhas rotuladas "Telefone:"
+  const labeled = t.match(/telefone[^:]*:\s*([\s\S]+)/i);
+  const target1 = labeled ? labeled[1] : t;
+
+  // 2) Procura o primeiro bloco de dígitos que pareça telefone BR:
+  //    Aceita "+55 (11) 91234-5678", "11912345678", "(11) 91234-5678", "11 91234 5678" etc.
+  const m = target1.replace(/[^\d+]/g, " ")
+                   .match(/(?:\+?55[\s\-\.]?)?\b(\d{2})[\s\-\.]?\d{4,5}[\s\-\.]?\d{4}\b/);
+  if (!m) return null;
+
+  // Normaliza para somente dígitos, preservando +55 se houver
+  const onlyDigits = (m[0].match(/\d+/g) || []).join("");
+  // Garante código do país se veio com +55, senão mantém como nacional
+  const has55 = /^\+?55/.test(m[0]);
+  return has55 ? ("55" + onlyDigits.replace(/^55/, "")) : onlyDigits;
+}
+
 
 function extractPatientInfo({ payload, phone, conversation }) {
   const name = (payload?.sender?.name || "Paciente (WhatsApp)").toString().trim();
-  const phoneFormatted = formatBrazilPhone(phone || payload?.sender?.phone || payload?.source);
 
-  // 2.1 – Primeiro tenta "Motivo: ..."
-  let reason = null;
+  // 1) Tenta pegar o telefone que o PACIENTE informou nas mensagens (prioridade)
+  let phoneFromUser = null;
   const msgs = conversation?.messages || [];
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (m.role !== "user") continue;
+    phoneFromUser = extractPhoneFromText(m.content);
+    if (phoneFromUser) break;
+  }
+
+  // 2) Se não achou nas mensagens, tenta no payload atual (texto/postback)
+  if (!phoneFromUser) {
+    const lastText = (payload?.payload?.text ||
+                      payload?.payload?.title ||
+                      payload?.payload?.postbackText ||
+                      payload?.text ||
+                      "") + "";
+    phoneFromUser = extractPhoneFromText(lastText);
+  }
+
+  // 3) Fallback: telefone do remetente (WhatsApp)
+  const rawPhone = phoneFromUser || phone || payload?.sender?.phone || payload?.source;
+
+  // 4) Formata bonitinho para Brasil (sempre terá algo por causa do fallback)
+  const phoneFormatted = formatBrazilPhone(rawPhone);
+
+  // ===== Motivo (mantém sua lógica atual; ajuste se já tiver a versão com inferência) =====
+  let reason = null;
+  // Procura “Motivo: …” no histórico
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i];
     if (m.role !== "user") continue;
     const found = m.content?.match?.(/motivo\s*[:\-]\s*(.+)/i);
     if (found) { reason = found[1].trim(); break; }
   }
-
-  // 2.2 – Se não veio "Motivo:", tenta inferir por frases ("dor lombar", "avaliação pré-anestésica")
-  if (!reason) {
-    // Olha das últimas mensagens do usuário para trás
-    for (let i = msgs.length - 1; i >= 0 && !reason; i--) {
-      const m = msgs[i];
-      if (m.role !== "user") continue;
-      reason = inferReasonFromText(m.content);
-    }
-  }
-
-  // 2.3 – Última tentativa: olhar o payload mais recente
+  // Se não achar, tenta no texto atual
   if (!reason) {
     const lastText =
       (payload?.payload?.text ||
@@ -167,10 +205,11 @@ function extractPatientInfo({ payload, phone, conversation }) {
        payload?.payload?.postbackText ||
        payload?.text ||
        "") + "";
-    // Primeiro tenta "Motivo: ...", depois inferência
     const m = lastText.match(/motivo\s*[:\-]\s*(.+)/i);
-    reason = m ? m[1].trim() : inferReasonFromText(lastText);
+    if (m) reason = m[1].trim();
   }
+  // (Opcional) Se você já adicionou a inferência de motivo (dor lombar, avaliação pré-anestésica, etc),
+  // chame aqui como fallback: reason = reason || inferReasonFromText(últimoTexto);
 
   return {
     name,
