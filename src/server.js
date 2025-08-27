@@ -260,14 +260,34 @@ async function handleInbound(req, res) {
           );
 
           if (found) {
-            await createCalendarEvent({
-              summary: "Consulta - Dra. Jenifer (via WhatsApp)",
-              description: "Agendado automaticamente pela secretária virtual.",
-              startISO,
-              endISO,
-              attendees: [], // inclua e-mail somente com consentimento
-              location: process.env.CLINIC_ADDRESS || "Clínica",
-            });
+           // Enriquecer o evento com Nome, Telefone e Motivo
+const conv = getConversation(from);
+const { name, phoneFormatted, reason } = extractPatientInfo({
+  payload: p,
+  phone: from,
+  conversation: conv,
+});
+
+// Deixar bem evidente no título
+const summary = `Consulta – ${name} – ${reason} – ${phoneFormatted}`;
+
+// E também dentro da descrição, em linhas separadas
+const description = [
+  `Paciente: ${name}`,
+  `Telefone: ${phoneFormatted}`,
+  `Motivo: ${reason}`,
+  `Origem: WhatsApp (Cristina)`,
+].join("\n");
+
+await createCalendarEvent({
+  summary,
+  description,
+  startISO,
+  endISO,
+  attendees: [], // inclua e-mail somente com consentimento
+  location: process.env.CLINIC_ADDRESS || "Clínica",
+});
+
           } else {
             console.warn("Confirmação detectada, mas não consegui interpretar data/hora:", textForParser);
           }
