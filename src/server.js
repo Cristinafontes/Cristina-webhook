@@ -134,26 +134,42 @@ function formatBrazilPhone(raw) {
  * - Nome e Telefone: do próprio payload do WhatsApp (quando possível)
  * - Motivo: procura por linhas no histórico do paciente do tipo dor... avaliação...  (com ou sem maiúsculas)".
  */
+
 function extractPatientInfo({ payload, phone, conversation }) {
   const name = (payload?.sender?.name || "Paciente (WhatsApp)").toString().trim();
   const phoneFormatted = formatBrazilPhone(phone || payload?.sender?.phone || payload?.source);
 
+  // 2.1 – Primeiro tenta "Motivo: ..."
   let reason = null;
   const msgs = conversation?.messages || [];
-  // Varre de trás pra frente só mensagens do usuário
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i];
     if (m.role !== "user") continue;
-    // Procura “Dor ...” (com ou sem maiúsculas)
-    const found = m.content.match(/dor\s*[:\-]\s*(.+)/i);
+    const found = m.content?.match?.(/motivo\s*[:\-]\s*(.+)/i);
     if (found) { reason = found[1].trim(); break; }
   }
 
-  // Última tentativa: usar o texto cru desta mensagem (se vier marcado)
+  // 2.2 – Se não veio "Motivo:", tenta inferir por frases ("dor lombar", "avaliação pré-anestésica")
   if (!reason) {
-    const lastText = (payload?.payload?.text || payload?.payload?.title || payload?.payload?.postbackText || "").trim();
-    const f2 = lastText.match(/motivo\s*[:\-]\s*(.+)/i);
-    if (f2) reason = f2[1].trim();
+    // Olha das últimas mensagens do usuário para trás
+    for (let i = msgs.length - 1; i >= 0 && !reason; i--) {
+      const m = msgs[i];
+      if (m.role !== "user") continue;
+      reason = inferReasonFromText(m.content);
+    }
+  }
+
+  // 2.3 – Última tentativa: olhar o payload mais recente
+  if (!reason) {
+    const lastText =
+      (payload?.payload?.text ||
+       payload?.payload?.title ||
+       payload?.payload?.postbackText ||
+       payload?.text ||
+       "") + "";
+    // Primeiro tenta "Motivo: ...", depois inferência
+    const m = lastText.match(/motivo\s*[:\-]\s*(.+)/i);
+    reason = m ? m[1].trim() : inferReasonFromText(lastText);
   }
 
   return {
@@ -162,6 +178,54 @@ function extractPatientInfo({ payload, phone, conversation }) {
     reason: reason || "Motivo não informado",
   };
 }
+
+// Tenta entender o motivo a partir de frases como "dor lombar", "avaliação pré-anestésica" etc.
+function inferReasonFromText(raw) {
+  const text = String(raw || "");
+  const norm = text
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // remove acentos
+    .toLowerCase();
+
+  // 1) Avaliação pré-anestésica (variações)
+  if (
+    /\bavaliac\w*\s+pre[-\s]?anest(e|es|esi|esic|esica|esia)/.test(norm) ||
+    /\bpre[-\s]?anest(e|es|esi|esic|esica|esia)/.test(norm)
+  ) {
+    return "Avaliação pré-anestésica";
+  }
+
+  // 2) Dor + região (tenta capturar o que vem depois de "dor")
+  // Ex.: "dor lombar", "dor no ombro direito", "dor cervical há 2 meses"
+  const m = text.match(/(?:^|\b)dor(?:\s+(?:no|na|em|de))?\s+([a-zA-ZÀ-ÿ\- ]{2,40})/i);
+  if (m) {
+    // Limpa terminação comum que não agrega
+    let region = m[1]
+      .replace(/\s+(ha|há)\s+\d+.*/i, "")       // remove "há 2 meses..."
+      .replace(/[.,;].*$/, "")                  // corta na primeira pontuação
+      .trim();
+
+    // Se a região ficou muito genérica, tenta melhorias por palavras-chave
+    const n2 = region.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+    if (/lomb/.test(n2)) region = "lombar";
+    else if (/cerv/.test(n2)) region = "cervical";
+    else if (/ombro/.test(n2)) region = "ombro";
+    else if (/joelh/.test(n2)) region = "joelho";
+    else if (/(cabec|cefale)/.test(n2)) region = "cabeça";
+    else if (/coluna/.test(n2)) region = "coluna";
+
+    return `Dor ${region}`.trim();
+  }
+
+  // 3) Palavras-chave soltas de dor (quando não deu para capturar a região)
+  if (/\bdor(es)?\b/.test(norm)) return "Dor";
+
+  // 4) Outros motivos comuns que queira mapear (exemplos):
+  if (/\bpos[-\s]?op(eratori[oa])?\b/.test(norm)) return "Avaliação pós-operatória";
+  if (/\bneuropat/.test(norm)) return "Dor neuropática";
+
+  return null; // não conseguiu inferir
+}
+
 function trimToLastN(arr, n) {
   if (arr.length <= n) return arr;
   return arr.slice(arr.length - n);
