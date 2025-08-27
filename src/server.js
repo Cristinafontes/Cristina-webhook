@@ -132,7 +132,7 @@ function formatBrazilPhone(raw) {
 /**
  * Tenta extrair Nome, Telefone e Motivo.
  * - Nome e Telefone: do próprio payload do WhatsApp (quando possível)
- * - Motivo: procura por linhas no histórico do paciente do tipo dor... ou Dor...".
+ * - Motivo: procura por linhas no histórico do paciente do tipo dor... avaliação...  (com ou sem maiúsculas)".
  */
 function extractPatientInfo({ payload, phone, conversation }) {
   const name = (payload?.sender?.name || "Paciente (WhatsApp)").toString().trim();
@@ -144,8 +144,8 @@ function extractPatientInfo({ payload, phone, conversation }) {
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i];
     if (m.role !== "user") continue;
-    // Procura “Motivo: ...” (com ou sem maiúsculas)
-    const found = m.content.match(/motivo\s*[:\-]\s*(.+)/i);
+    // Procura “Dor ...” (com ou sem maiúsculas)
+    const found = m.content.match(/dor\s*[:\-]\s*(.+)/i);
     if (found) { reason = found[1].trim(); break; }
   }
 
