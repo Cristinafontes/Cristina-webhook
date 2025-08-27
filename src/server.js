@@ -132,7 +132,7 @@ function formatBrazilPhone(raw) {
 /**
  * Tenta extrair Nome, Telefone e Motivo.
  * - Nome e Telefone: do próprio payload do WhatsApp (quando possível)
- * - Motivo: procura por linhas no histórico do paciente do tipo "Motivo: ...".
+ * - Motivo: procura por linhas no histórico do paciente do tipo dor... ou Dor...".
  */
 function extractPatientInfo({ payload, phone, conversation }) {
   const name = (payload?.sender?.name || "Paciente (WhatsApp)").toString().trim();
