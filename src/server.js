@@ -259,8 +259,7 @@ function extractReasonChoice(text) {
 
 function extractPatientInfo({ payload, phone, conversation }) {
   const msgs = conversation?.messages || [];
-
-    // ====== NOME (prioriza o informado pelo paciente; fallback: nome do WhatsApp) ======
+  // ====== NOME (prioriza o informado pelo paciente; fallback: nome do WhatsApp) ======
   let nameFromUser = null;
 
   // 1) Varre o histórico da conversa do paciente (mensagens role=user)
@@ -283,17 +282,13 @@ function extractPatientInfo({ payload, phone, conversation }) {
   }
 
   // 3) Decide o nome final
-  //    - Se o nome informado pelo paciente for válido, usa ele.
-  //    - Caso contrário, usa o nome do WhatsApp, se for um nome plausível.
-  //    - Último fallback: "Paciente (WhatsApp)"
   const BAD_NAME = /\b(quero|presencial|telemedicina|agendar|cancelar|remarcar|consulta|dor)\b/i;
 
-  let nameFinal = null;
   if (nameFromUser && !BAD_NAME.test(nameFromUser) && isLikelyName(nameFromUser)) {
-    nameFinal = nameFromUser.trim();
+    name = nameFromUser.trim();
   } else {
     const senderName = (payload?.sender?.name || "").toString().trim();
-    nameFinal = isLikelyName(senderName) ? senderName : "Paciente (WhatsApp)";
+    name = isLikelyName(senderName) ? senderName : "Paciente (WhatsApp)";
   }
 
   // ====== TELEFONE (prioriza o informado pelo paciente) ======
