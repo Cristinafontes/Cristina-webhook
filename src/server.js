@@ -627,32 +627,38 @@ async function handleInbound(req, res) {
             process.env.TZ || "America/Sao_Paulo"
           );
 
-          if (found) {
-           // Enriquecer o evento com Nome, Telefone e Motivo
+          if (found) {// Enriquecer o evento com Nome, Telefone, Motivo e Modalidade
 const conv = getConversation(from);
-const { name, phoneFormatted, reason } = extractPatientInfo({
+const { name, phoneFormatted, reason, modality } = extractPatientInfo({
   payload: p,
   phone: from,
   conversation: conv,
 });
 
-// Deixar bem evidente no título
-const summary = `Consulta – ${name} – ${reason} – ${phoneFormatted}`;
+// Título com modalidade
+const summary = `Consulta (${modality}) — ${name} — ${reason} — ${phoneFormatted}`;
 
-// E também dentro da descrição, em linhas separadas
+// Descrição com modalidade
 const description = [
   `Paciente: ${name}`,
   `Telefone: ${phoneFormatted}`,
   `Motivo: ${reason}`,
+  `Modalidade: ${modality}`,
   `Origem: WhatsApp (Cristina)`,
 ].join("\n");
+
+// Opcional: também refletir no "Local"
+const location =
+  modality === "Telemedicina"
+    ? "Telemedicina (link será enviado)"
+    : (process.env.CLINIC_ADDRESS || "Clínica");
 
 await createCalendarEvent({
   summary,
   description,
   startISO,
   endISO,
-  attendees: [], // inclua e-mail somente com consentimento
+  attendees: [], // inclua e-mails só com consentimento
   location: process.env.CLINIC_ADDRESS || "Clínica",
 });
 
