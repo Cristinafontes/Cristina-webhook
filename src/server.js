@@ -627,7 +627,8 @@ async function handleInbound(req, res) {
             process.env.TZ || "America/Sao_Paulo"
           );
 
-          if (found) {// Enriquecer o evento com Nome, Telefone, Motivo e Modalidade
+          if (found) {
+            // Enriquecer o evento com Nome, Telefone, Motivo e Modalidade
 const conv = getConversation(from);
 const { name, phoneFormatted, reason, modality } = extractPatientInfo({
   payload: p,
