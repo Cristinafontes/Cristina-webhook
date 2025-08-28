@@ -395,39 +395,53 @@ console.log("[NAME PICKED]", name);
 
   // 3) Fallback garantido
   if (!reason) reason = "Medicina da Dor";
-// ====== MODALIDADE (3=Presencial, 4=Telemedicina; aceita texto) ======
+// ====== MODALIDADE (3=Presencial, 4=Telemedicina; aceita texto; prioriza o mais recente) ======
 let modality = null;
 
-// Pega texto de qualquer formato de mensagem do histórico/payload
-const pickText = (obj) => {
-  if (!obj) return "";
-  // formatos comuns nas suas mensagens:
-  // - obj (é string)
-  // - obj.text
-  // - obj.content
-  // - obj.payload?.text
-  // - obj.payload?.payload?.text
-  if (typeof obj === "string") return obj;
-  return (
-    obj.text ||
-    obj.content ||
-    obj.payload?.text ||
-    obj.payload?.payload?.text ||
-    ""
-  );
+// 1) Coleta texto de qualquer formato (payload e histórico)
+const pickTexts = (obj) => {
+  const out = [];
+  const push = (v) => { if (v && typeof v === "string") out.push(v); };
+
+  if (!obj) return out;
+
+  // se obj já é string
+  if (typeof obj === "string") { out.push(obj); return out; }
+
+  // chaves comuns
+  push(obj.text);
+  push(obj.content);
+  push(obj.title);
+  push(obj.postbackText);
+
+  // estruturas aninhadas comuns em bots
+  if (obj.message) push(obj.message.text);
+  if (obj.payload) {
+    push(obj.payload.text);
+    push(obj.payload.title);
+    push(obj.payload.postbackText);
+    if (obj.payload.payload) {
+      push(obj.payload.payload.text);
+      push(obj.payload.payload.title);
+      push(obj.payload.payload.postbackText);
+    }
+    if (obj.payload.message) push(obj.payload.message.text);
+  }
+
+  return out.filter(Boolean);
 };
 
-// traduz o texto em modalidade
+// 2) Normaliza -> decide modalidade a partir de um texto
 const extractModalityChoice = (text) => {
   if (!text) return null;
   const t = String(text).toLowerCase();
 
-  // números (se o paciente responder só o número)
+  // NÚMEROS (se o paciente responder só o número)
   if (/\b4\b/.test(t)) return "Telemedicina";
   if (/\b3\b/.test(t)) return "Presencial";
 
-  // palavras/expressões
-  if (/\btele\s*medicina\b|\bteleconsulta\b|\bon\s?-?line\b|\bvirtual\b|\bvídeo?\s*chamada\b|\bvideo?\s*chamada\b|\bremot[oa]\b/.test(t)) {
+  // PALAVRAS/EXPRESSÕES
+  if (/\btele\s*medicina\b|\bteleconsulta\b|\btele\s*atendimento\b|\bon\s?-?line\b|\bvirtual\b|\bvídeo?\s*chamada\b|\bvideo?\s*chamada\b|\bremot[oa]\b/.test(t)) {
     return "Telemedicina";
   }
   if (/\bpresencial\b|\bconsult[óo]rio\b/.test(t)) {
@@ -436,26 +450,37 @@ const extractModalityChoice = (text) => {
   return null;
 };
 
-// 1) Última mensagem (o payload atual)
-const lastText = pickText(payload);
-modality = extractModalityChoice(lastText);
+// 3) Monta uma lista de textos do mais recente para o mais antigo
+const texts = [];
 
-// 2) Se não decidiu, varre o histórico do MAIS recente para o mais antigo
-if (!modality && Array.isArray(conversation)) {
+// a) payload atual (última mensagem do usuário)
+pickTexts(payload).forEach((s) => texts.push(s));
+
+// b) histórico (varre de trás pra frente; pode não ter "role", então não filtramos por role)
+if (Array.isArray(conversation)) {
   for (let i = conversation.length - 1; i >= 0; i--) {
-    const m = conversation[i];
-    // só mensagens do usuário
-    if (!m || (m.role && m.role !== "user")) continue;
-    const decided = extractModalityChoice(pickText(m));
-    if (decided) { modality = decided; break; }
+    pickTexts(conversation[i]).forEach((s) => texts.push(s));
   }
 }
 
-// 3) Fallback
+// 4) Decide: percorre do mais recente para o mais antigo
+for (const t of texts) {
+  // dentro de cada texto, se houver os dois termos, TELE ganha
+  if (/\b4\b|\btele\s*medicina\b|\bteleconsulta\b|\btele\s*atendimento\b|\bon\s?-?line\b|\bvirtual\b|\bvídeo?\s*chamada\b|\bvideo?\s*chamada\b|\bremot[oa]\b/i.test(t)) {
+    modality = "Telemedicina";
+    break;
+  }
+  if (/\b3\b|\bpresencial\b|\bconsult[óo]rio\b/i.test(t)) {
+    modality = "Presencial";
+    break;
+  }
+}
+
+// 5) Fallback
 if (!modality) modality = "Presencial";
 
-console.log("[MODALITY PICKED]", modality, "| lastText:", (lastText || "").slice(0, 120));
-
+// Log de diagnóstico
+console.log("[MODALITY PICKED]", modality, "| sample(lastText)=", (texts[0] || "").slice(0, 120));
   return { name, phoneFormatted, reason, modality };
 }
 
