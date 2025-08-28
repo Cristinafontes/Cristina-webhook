@@ -395,8 +395,39 @@ console.log("[NAME PICKED]", name);
 
   // 3) Fallback garantido
   if (!reason) reason = "Medicina da Dor";
+// ====== MODALIDADE (Presencial x Telemedicina) ======
+let modality = null;
 
-  return { name, phoneFormatted, reason };
+let modalityCorpus = "";
+if (Array.isArray(conversation)) {
+  for (const m of conversation) {
+    if (m && m.role === "user" && m.content) {
+      modalityCorpus += " " + String(m.content);
+    }
+  }
+}
+modalityCorpus += " " + String(
+  payload?.payload?.text ||
+  payload?.payload?.title ||
+  payload?.payload?.postbackText ||
+  payload?.text ||
+  ""
+);
+
+const TELE_RE = /\b(telemedicina|tele[-\s]?consulta|teleconsulta|online|on-?line|virtual|remot[oa]|vídeo\s?chamada|video\s?chamada|por\s+vídeo|por\s+video|a\s+dist[aâ]ncia|à\s+dist[aâ]ncia)\b/i;
+const PRES_RE = /\b(presencial|consult[óo]rio|no\s+consult[óo]rio|no\s+endereço|ir\s+at[eé])\b/i;
+
+if (TELE_RE.test(modalityCorpus)) {
+  modality = "Telemedicina";
+} else if (PRES_RE.test(modalityCorpus)) {
+  modality = "Presencial";
+} else {
+  modality = "Presencial"; // default
+}
+
+console.log("[MODALITY PICKED]", modality);
+  
+  return { name, phoneFormatted, reason, modality };
 }
 
 
