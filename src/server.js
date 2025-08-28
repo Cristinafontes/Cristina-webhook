@@ -395,19 +395,38 @@ console.log("[NAME PICKED]", name);
 
   // 3) Fallback garantido
   if (!reason) reason = "Medicina da Dor";
-// ====== MODALIDADE (3=Presencial, 4=Telemedicina; aceita texto também) ======
+// ====== MODALIDADE (3=Presencial, 4=Telemedicina; aceita texto) ======
 let modality = null;
 
-// Função local: traduz o texto em modalidade
+// Pega texto de qualquer formato de mensagem do histórico/payload
+const pickText = (obj) => {
+  if (!obj) return "";
+  // formatos comuns nas suas mensagens:
+  // - obj (é string)
+  // - obj.text
+  // - obj.content
+  // - obj.payload?.text
+  // - obj.payload?.payload?.text
+  if (typeof obj === "string") return obj;
+  return (
+    obj.text ||
+    obj.content ||
+    obj.payload?.text ||
+    obj.payload?.payload?.text ||
+    ""
+  );
+};
+
+// traduz o texto em modalidade
 const extractModalityChoice = (text) => {
   if (!text) return null;
   const t = String(text).toLowerCase();
 
-  // Aceita números isolados
+  // números (se o paciente responder só o número)
   if (/\b4\b/.test(t)) return "Telemedicina";
   if (/\b3\b/.test(t)) return "Presencial";
 
-  // Aceita texto comum
+  // palavras/expressões
   if (/\btele\s*medicina\b|\bteleconsulta\b|\bon\s?-?line\b|\bvirtual\b|\bvídeo?\s*chamada\b|\bvideo?\s*chamada\b|\bremot[oa]\b/.test(t)) {
     return "Telemedicina";
   }
@@ -417,31 +436,26 @@ const extractModalityChoice = (text) => {
   return null;
 };
 
-// 1) Prioriza a última mensagem atual do usuário (payload)
-const _lastText = (
-  payload?.payload?.text ||
-  payload?.payload?.title ||
-  payload?.payload?.postbackText ||
-  payload?.text ||
-  ""
-) + "";
-modality = extractModalityChoice(_lastText);
+// 1) Última mensagem (o payload atual)
+const lastText = pickText(payload);
+modality = extractModalityChoice(lastText);
 
-// 2) Se não achou, percorre o histórico do MAIS recente para o mais antigo
+// 2) Se não decidiu, varre o histórico do MAIS recente para o mais antigo
 if (!modality && Array.isArray(conversation)) {
   for (let i = conversation.length - 1; i >= 0; i--) {
     const m = conversation[i];
-    if (!m || m.role !== "user" || !m.content) continue;
-    const decided = extractModalityChoice(m.content);
+    // só mensagens do usuário
+    if (!m || (m.role && m.role !== "user")) continue;
+    const decided = extractModalityChoice(pickText(m));
     if (decided) { modality = decided; break; }
   }
 }
 
-// 3) Fallback: se mesmo assim não achar, define um padrão
-if (!modality) modality = "Presencial"; // mude para null se quiser forçar perguntar sempre
+// 3) Fallback
+if (!modality) modality = "Presencial";
 
-console.log("[MODALITY PICKED]", modality);
-  
+console.log("[MODALITY PICKED]", modality, "| lastText:", (lastText || "").slice(0, 120));
+
   return { name, phoneFormatted, reason, modality };
 }
 
