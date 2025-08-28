@@ -395,27 +395,14 @@ console.log("[NAME PICKED]", name);
 
   // 3) Fallback garantido
   if (!reason) reason = "Medicina da Dor";
-// ====== MODALIDADE (prioriza a mensagem mais recente) ======
+// ====== MODALIDADE (prioriza a última mensagem; Telemedicina vence em cada mensagem) ======
 let modality = null;
 
 const TELE_RE = /\b(tele\s*medicina|tele[-\s]?consulta|teleconsulta|tele\s*atendimento|online|on-?line|virtual|remot[oa]|vídeo?\s*chamada|video?\s*chamada|por\s+(?:vídeo|video)|a\s+dist[aâ]ncia|à\s+dist[aâ]ncia)\b/i;
 const PRES_RE = /\b(presencial|consult[óo]rio|no\s+consult[óo]rio|no\s+endere[cç]o|no\s+endereço|ir\s+at[eé]|comparecer|compareço)\b/i;
 
-const decideFromText = (t) => {
-  if (!t) return null;
-  const idxTele = t.search(TELE_RE);
-  const idxPres = t.search(PRES_RE);
-  if (idxTele >= 0 || idxPres >= 0) {
-    if (idxTele >= 0 && idxPres >= 0) {
-      // se ambos aparecem, escolhe o que aparece por último no texto
-      return idxTele > idxPres ? "Telemedicina" : "Presencial";
-    }
-    return idxTele >= 0 ? "Telemedicina" : "Presencial";
-  }
-  return null;
-};
-
-// 1) Primeiro: texto do payload atual (última mensagem do usuário)
+// 0) Constrói uma lista do texto mais recente -> mais antigo (apenas do usuário)
+const texts = [];
 const lastText = (
   payload?.payload?.text ||
   payload?.payload?.title ||
@@ -423,23 +410,27 @@ const lastText = (
   payload?.text ||
   ""
 ) + "";
+if (lastText) texts.push(String(lastText));
 
-modality = decideFromText(lastText);
-
-// 2) Se ainda não decidido, percorre o histórico do MAIS recente para o mais antigo
-if (!modality && Array.isArray(conversation)) {
+if (Array.isArray(conversation)) {
   for (let i = conversation.length - 1; i >= 0; i--) {
     const m = conversation[i];
     if (!m || m.role !== "user" || !m.content) continue;
-    const decided = decideFromText(String(m.content));
-    if (decided) { modality = decided; break; }
+    texts.push(String(m.content));
   }
 }
 
-// 3) Fallback
+// 1) Varre do mais recente para o mais antigo; em CADA texto, testa Tele antes de Presencial
+for (const t of texts) {
+  if (TELE_RE.test(t)) { modality = "Telemedicina"; break; }
+  if (PRES_RE.test(t)) { modality = "Presencial";   break; }
+}
+
+// 2) Fallback
 if (!modality) modality = "Presencial";
 
-console.log("[MODALITY PICKED]", modality, "| source:", decideFromText(lastText) ? "lastText" : (modality ? "history/default" : "none"));
+// Log de diagnóstico
+console.log("[MODALITY PICKED]", modality, "| sample(lastText)=", (lastText || "").slice(0, 120));
   
   return { name, phoneFormatted, reason, modality };
 }
