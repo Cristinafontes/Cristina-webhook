@@ -595,148 +595,116 @@ async function handleInbound(req, res) {
       return;
     }
 // === INTENÇÃO DE AGENDAMENTO + LISTA DE HORÁRIOS ===
-
 const text = String(userText ?? "").trim();
 
 function isScheduleIntent(msg = "") {
   const s = msg.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "");
   const keys = [
-  "agendar","agendamento","agendar consulta","agendar uma consulta",
-  "marcar","marcacao","marcação","marcar consulta","quero marcar",
-  "consulta","consultar","atendimento","agenda","horario","horário",
-  "disponivel","disponível","tem horario","tem horário","tem vaga",
-  "amanha","amanhã","hoje","essa semana","semana que vem","proxima semana",
-  "quando posso","posso ir","posso marcar","qual o melhor horario","quais horarios"
-];
+    "agendar","agendamento","agendar consulta","agendar uma consulta",
+    "marcar","marcacao","marcação","marcar consulta","quero marcar",
+    "consulta","consultar","atendimento","agenda","horario","horário",
+    "disponivel","disponível","tem horario","tem horário","tem vaga",
+    "amanha","amanhã","hoje","essa semana","semana que vem","proxima semana",
+    "quando posso","posso ir","posso marcar","qual o melhor horario","quais horarios"
+  ];
   return keys.some(k => s.includes(k.normalize("NFD").replace(/\p{Diacritic}/gu, "")));
 }
 
 if (isScheduleIntent(text)) {
   const dt = parseCandidateDateTime(text);
 
+  // 1) NÃO tem data/hora -> ofereça horários livres e encerre aqui
   if (!dt?.found) {
-    // Não tem data/hora -> oferecer horários
-    const tz = process.env.TZ || "America/Sao_Paulo";
-const slots = await listAvailableSlots({ days: 14, limit: 80 });
+    const slots = await listAvailableSlots({ days: 14, limit: 80 });
 
-// Agrupa por dia e limita a exibição (ex.: 6 horários por dia, 5 dias)
-const grouped = {};
-for (const s of slots) {
-  if (!grouped[s.dayKey]) grouped[s.dayKey] = [];
-  if (grouped[s.dayKey].length < 6) grouped[s.dayKey].push(s.timeLabel);
-}
+    // Agrupa por dia e limita apresentação (até 6 horários por dia e 5 dias)
+    const grouped = {};
+    for (const s of slots) {
+      if (!grouped[s.dayLabel]) grouped[s.dayLabel] = [];
+      if (grouped[s.dayLabel].length < 6) grouped[s.dayLabel].push(s.timeLabel);
+    }
 
-const lines = Object.entries(grouped)
-  .slice(0, 5) // mostra no máx 5 dias
-  .map(([day, times]) => `• ${day}, às ${times.join(", ")}`);
+    const lines = Object.entries(grouped)
+      .slice(0, 5)
+      .map(([day, times]) => `• ${day}, às ${times.join(", ")}`);
 
-if (!lines.length) {
-  await sendWhatsAppText({
-    to: from,
-    text: "No momento não encontrei horários futuros. Posso procurar outras datas?"
-  });
-  return;
-}
-
-await sendWhatsAppText({
-  to: from,
-  text: [
-    "Ótimo! Vou te enviar os horários livres. Depois me diga qual prefere.",
-    "",
-    "As opções são:",
-    ...lines,
-    "",
-    "Qual horário você prefere?"
-  ].join("\n")
-});
-return;
-
-// NÃO agendar no passado
-if (new Date(endISO).getTime() <= Date.now()) {
-  await sendWhatsAppText({
-    to: from,
-    text: "❌ Não é possível agendar em uma data/hora no passado. Por favor, escolha uma data futura."
-  });
-  return;
-}
-
-// Checar conflitos (anti-sobreposição)
-const check2 = await isSlotBlockedOrBusy({ startISO, endISO });
-if (check2.busy) {
-  const first = check2.conflicts?.[0];
-  const resumo = first
-    ? `Conflito com: ${first.summary} (${first.start} → ${first.end})`
-    : "Horário indisponível.";
-  await sendWhatsAppText({
-    to: from,
-    text: `⚠️ Esse horário ficou indisponível. ${resumo}\nPor favor, escolha outro horário.`
-  });
-  return;
-}
-console.log("[CONFIRM FLOW] scheduling", { startISO, endISO });
-
-  
-// Livre -> criar evento
-await createCalendarEvent({
-  summary,
-  description,
-  startISO,
-  endISO,
-  location, // já definido acima
-  calendarId: process.env.GOOGLE_CALENDAR_ID || "primary",
-});
-
-  await sendWhatsAppText({ to: from, text: "✅ Agendei! Você receberá o convite no seu e-mail." });
-  return;
-}
-
-// === FIM DO BLOCO ===
-
-    safeLog("INBOUND", req.body);
-
-    const trimmed = (userText || "").trim().toLowerCase();
-    if (["reset", "reiniciar", "reiniciar conversa", "novo atendimento"].includes(trimmed)) {
-      resetConversation(from);
-      await sendWhatsAppText({ to: from, text: "Conversa reiniciada. Como posso ajudar?" });
+    if (!lines.length) {
+      await sendWhatsAppText({
+        to: from,
+        text: "No momento não encontrei horários futuros. Posso procurar outras datas?"
+      });
       return;
     }
 
-    // Montagem de contexto para a IA
-    const conv = getConversation(from);
-    let composed;
+    await sendWhatsAppText({
+      to: from,
+      text: [
+        "Ótimo! Vou te enviar os horários livres. Depois me diga qual prefere.",
+        "",
+        "As opções são:",
+        ...lines,
+        "",
+        "Qual horário você prefere?"
+      ].join("\n")
+    });
+    return; // <-- encerra o fluxo de “listar horários”
+  }
 
-    if (conv && conv.messages.length > 0) {
-      const lines = conv.messages.map(m =>
-        m.role === "user" ? `Paciente: ${m.content}` : `Cristina: ${m.content}`
-      );
-      lines.push(`Paciente: ${userText}`);
+  // 2) SE o paciente já passou data/hora no texto…
+  //    Aqui só confirmamos a intenção. A criação do evento é feita
+  //    APENAS quando a Cristina responder no formato de confirmação.
+  await sendWhatsAppText({
+    to: from,
+    text: "Perfeito! Vou confirmar com você. Posso prosseguir com esse agendamento?"
+  });
+  // (O fluxo de criação real acontece no bloco de CONFIRMAÇÃO abaixo)
+}
+// === FIM DO BLOCO ===
 
-      let body = lines.join("\n");
-      if (body.length > MAX_CONTEXT_CHARS) {
-        const rev = lines.slice().reverse();
-        const kept = [];
-        let total = 0;
-        for (const line of rev) {
-          total += line.length + 1;
-          if (total > MAX_CONTEXT_CHARS) break;
-          kept.push(line);
-        }
-        body = kept.reverse().join("\n");
-      }
+safeLog("INBOUND", req.body);
 
-      composed =
-        `Contexto de conversa (mais recente por último):\n` +
-        `${body}\n\n` +
-        `Responda de forma consistente com o histórico, mantendo o tom e as regras da clínica.`;
-    } else {
-      composed = userText;
+const trimmed = (userText || "").trim().toLowerCase();
+if (["reset", "reiniciar", "reiniciar conversa", "novo atendimento"].includes(trimmed)) {
+  resetConversation(from);
+  await sendWhatsAppText({ to: from, text: "Conversa reiniciada. Como posso ajudar?" });
+  return;
+}
+
+// Montagem de contexto para a IA
+const conv = getConversation(from);
+let composed;
+
+if (conv && conv.messages.length > 0) {
+  const lines = conv.messages.map(m =>
+    m.role === "user" ? `Paciente: ${m.content}` : `Cristina: ${m.content}`
+  );
+  lines.push(`Paciente: ${userText}`);
+
+  let body = lines.join("\n");
+  if (body.length > MAX_CONTEXT_CHARS) {
+    const rev = lines.slice().reverse();
+    const kept = [];
+    let total = 0;
+    for (const line of rev) {
+      total += line.length + 1;
+      if (total > MAX_CONTEXT_CHARS) break;
+      kept.push(line);
     }
+    body = kept.reverse().join("\n");
+  }
 
-    // Resposta da secretária (IA)
-    const answer = await askCristina({ userText: composed, userPhone: String(from) });
+  composed =
+    `Contexto de conversa (mais recente por último):\n` +
+    `${body}\n\n` +
+    `Responda de forma consistente com o histórico, mantendo o tom e as regras da clínica.`;
+} else {
+  composed = userText;
+}
 
-    
-    // ======== DISPARO DE CANCELAMENTO (formato EXATO) ========
+// Resposta da secretária (IA)
+const answer = await askCristina({ userText: composed, userPhone: String(from) });
+
+/* ======== DISPARO DE CANCELAMENTO (formato EXATO) ======== */
     // "Pronto! Sua consulta com a Dra. Jenifer está cancelada para o dia dd/mm/aa HH:MM"
     try {
       const cancelRegex = /^Pronto!\s*Sua consulta com a Dra\.?\s*Jenifer está cancelada para o dia\s+(\d{2})\/(\d{2})\/(\d{2})\s+(\d{1,2}:\d{2})\.?$/i;
@@ -754,113 +722,93 @@ await createCalendarEvent({
     } catch (err) {
       console.error("[cancel-forward] error:", err?.message || err);
     }
-    // ======== FIM DO DISPARO DE CANCELAMENTO ========
-// ======== SÓ CRIA EVENTO SE A SECRETÁRIA CONFIRMAR NESSE FORMATO ========
-    // "Pronto! Sua consulta com a Dra. Jenifer está agendada para o dia 30/08/25, horário 14:00."
-    const confirmRegex =
-      /pronto!\s*sua\s+consulta\s+com\s+a\s+dra\.?\s+jenifer\s+est[aá]\s+agendada\s+para\s+o\s+dia\s+(\d{1,2})\/(\d{1,2})\/\d{2}\s*,?\s*hor[áa]rio\s+(\d{1,2}:\d{2}|\d{1,2}h)/i;
+/* ======== FIM DO DISPARO DE CANCELAMENTO ======== */
 
-    if (answer) {
-      const m = answer.match(confirmRegex);
-      if (m) {
-        try {
-          const dd = m[1].padStart(2, "0");
-          const mm = m[2].padStart(2, "0");
-          let hhmm = m[3];
+/* ======== SÓ CRIA EVENTO SE A CRISTINA CONFIRMAR NESSE FORMATO ======== */
+/* Ex.: "Pronto! Sua consulta com a Dra. Jenifer está agendada para o dia 30/08/25, horário 14:00." */
+const confirmRegex =
+  /pronto!\s*sua\s+consulta\s+com\s+a\s+dra\.?\s+jenifer\s+est[aá]\s+agendada\s+para\s+o\s+dia\s+(\d{1,2})\/(\d{1,2})\/\d{2}\s*,?\s*hor[áa]rio\s+(\d{1,2}:\d{2}|\d{1,2}h)/i;
 
-          // Normaliza "14h" -> "14:00"
-          if (/^\d{1,2}h$/i.test(hhmm)) {
-            hhmm = hhmm.replace(/h$/i, ":00");
-          }
+if (answer) {
+  const m = answer.match(confirmRegex);
+  if (m) {
+    try {
+      const dd = m[1].padStart(2, "0");
+      const mm = m[2].padStart(2, "0");
+      let hhmm = m[3];
+      if (/^\d{1,2}h$/i.test(hhmm)) hhmm = hhmm.replace(/h$/i, ":00");
 
-          // Monta um texto que o nosso parser (utils.esm.js) entende
-          // Obs.: ele usa o ANO ATUAL por padrão.
-          const textForParser = `${dd}/${mm} ${hhmm}`;
+      const textForParser = `${dd}/${mm} ${hhmm}`;
+      const { found, startISO, endISO } = parseCandidateDateTime(
+        textForParser,
+        process.env.TZ || "America/Sao_Paulo"
+      );
 
-          const { found, startISO, endISO } = parseCandidateDateTime(
-            textForParser,
-            process.env.TZ || "America/Sao_Paulo"
-          );
+      if (found) {
+        // Enriquecimento do evento
+        const convNow = getConversation(from);
+        const { name, phoneFormatted, reason, modality } = extractPatientInfo({
+          payload: p,
+          phone: from,
+          conversation: convNow,
+        });
 
-          if (found) {
-            // Enriquecer o evento com Nome, Telefone, Motivo e Modalidade
-const conv = getConversation(from);
-const { name, phoneFormatted, reason, modality } = extractPatientInfo({
-  payload: p,
-  phone: from,
-  conversation: conv,
-});
+        const summary = `Consulta (${modality}) — ${name} — ${reason} — ${phoneFormatted}`;
+        const description = [
+          `Paciente: ${name}`,
+          `Telefone: ${phoneFormatted}`,
+          `Motivo: ${reason}`,
+          `Modalidade: ${modality}`,
+          `Origem: WhatsApp (Cristina)`,
+        ].join("\n");
+        const location =
+          modality === "Telemedicina"
+            ? "Telemedicina (link será enviado)"
+            : (process.env.CLINIC_ADDRESS || "Clínica");
 
-// Título com modalidade
-const summary = `Consulta (${modality}) — ${name} — ${reason} — ${phoneFormatted}`;
-
-// Descrição com modalidade
-const description = [
-  `Paciente: ${name}`,
-  `Telefone: ${phoneFormatted}`,
-  `Motivo: ${reason}`,
-  `Modalidade: ${modality}`,
-  `Origem: WhatsApp (Cristina)`,
-].join("\n");
-
-// Opcional: também refletir no "Local"
-const location =
-  modality === "Telemedicina"
-    ? "Telemedicina (link será enviado)"
-    : (process.env.CLINIC_ADDRESS || "Clínica");
-            // NÃO agendar no passado
-if (new Date(endISO).getTime() <= Date.now()) {
-  await sendWhatsAppText({ to: from, text: "❌ Não é possível agendar em uma data/hora no passado. Por favor, escolha uma data futura." });
-  return;
-}
-
-
-// Checar conflitos
-const check = await isSlotBlockedOrBusy({ startISO, endISO });
-if (check.busy) {
-  const first = check.conflicts?.[0];
-  const resumo = first
-    ? `Conflito com: ${first.summary} (${first.start} → ${first.end})`
-    : "Horário indisponível.";
-  await sendWhatsAppText({ to: from, text: `⚠️ Esse horário está indisponível. ${resumo}\nPor favor, escolha outro horário.` });
-  return;
-}
-
-// NÃO agendar no passado
-if (new Date(endISO).getTime() <= Date.now()) {
-  await sendWhatsAppText({ to: from, text: "❌ Não é possível agendar em uma data/hora no passado. Por favor, escolha uma data futura." });
-  return;
-}
-
-// Checar conflitos
-const check2 = await isSlotBlockedOrBusy({ startISO, endISO });
-if (check2.busy) {
-  const first = check2.conflicts?.[0];
-  const resumo = first
-    ? `Conflito com: ${first.summary} (${first.start} → ${first.end})`
-    : "Horário indisponível.";
-  await sendWhatsAppText({ to: from, text: `⚠️ Esse horário ficou indisponível. ${resumo}\nPor favor, escolha outro horário.` });
-  return;
-}
-            
-// Criar evento
-await createCalendarEvent({
-  summary,
-  description,
-  startISO,
-  endISO,
-  location,
-  calendarId: process.env.GOOGLE_CALENDAR_ID || "primary",
-});
-
-        } else {
-          console.warn("Confirmação detectada, mas não consegui interpretar data/hora:", textForParser);
+        // Regras anti-passado / anti-sobreposição
+        if (new Date(endISO).getTime() <= Date.now()) {
+          await sendWhatsAppText({
+            to: from,
+            text: "❌ Não é possível agendar em uma data/hora no passado. Por favor, escolha uma data futura."
+          });
+          return;
         }
-      } catch (err) {
-        console.error("Erro ao criar evento no Google Calendar:", err?.response?.data || err);
-      }
 
-// ======= FIM DA REGRA DE CONFIRMAÇÃO =======
+        const check = await isSlotBlockedOrBusy({ startISO, endISO });
+        if (check.busy) {
+          const first = check.conflicts?.[0];
+          const resumo = first
+            ? `Conflito com: ${first.summary} (${first.start} → ${first.end})`
+            : "Horário indisponível.";
+          await sendWhatsAppText({
+            to: from,
+            text: `⚠️ Esse horário está indisponível. ${resumo}\nPor favor, escolha outro horário.`
+          });
+          return;
+        }
+
+        await createCalendarEvent({
+          summary,
+          description,
+          startISO,
+          endISO,
+          location,
+          calendarId: process.env.GOOGLE_CALENDAR_ID || "primary",
+        });
+
+        await sendWhatsAppText({ to: from, text: "✅ Agendei! Você receberá o convite no seu e-mail." });
+        return;
+      } else {
+        console.warn("Confirmação detectada, mas não consegui interpretar data/hora:", textForParser);
+      }
+    } catch (err) {
+      console.error("Erro ao criar evento no Google Calendar:", err?.response?.data || err);
+    }
+  }
+}
+
+/* ======== FIM DA REGRA DE CONFIRMAÇÃO ======== */
 
 // Memória + resposta ao paciente
 appendMessage(from, "user", userText);
