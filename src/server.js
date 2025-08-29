@@ -601,11 +601,13 @@ const text = String(userText ?? "").trim();
 function isScheduleIntent(msg = "") {
   const s = msg.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "");
   const keys = [
-    "agendar","agendamento","marcar","marcacao","marcação",
-    "consulta","horario","horário","disponivel","disponível",
-    "amanha","amanhã","hoje","essa semana","semana que vem",
-    "posso ir","quando posso","tem vaga","tem horario","tem horário"
-  ];
+  "agendar","agendamento","agendar consulta","agendar uma consulta",
+  "marcar","marcacao","marcação","marcar consulta","quero marcar",
+  "consulta","consultar","atendimento","agenda","horario","horário",
+  "disponivel","disponível","tem horario","tem horário","tem vaga",
+  "amanha","amanhã","hoje","essa semana","semana que vem","proxima semana",
+  "quando posso","posso ir","posso marcar","qual o melhor horario","quais horarios"
+];
   return keys.some(k => s.includes(k.normalize("NFD").replace(/\p{Diacritic}/gu, "")));
 }
 
@@ -781,15 +783,28 @@ const location =
   modality === "Telemedicina"
     ? "Telemedicina (link será enviado)"
     : (process.env.CLINIC_ADDRESS || "Clínica");
+// Checar conflito (anti-sobreposição) ANTES de criar
+const check2 = await isSlotBlockedOrBusy({ startISO, endISO });
+if (check2.busy) {
+  const first = check2.conflicts?.[0];
+  const resumo = first
+    ? `Conflito com: ${first.summary} (${first.start} → ${first.end})`
+    : "Horário indisponível.";
+  await sendWhatsAppText({ to: from, text: `⚠️ Esse horário ficou indisponível. ${resumo}\nPor favor, escolha outro horário.` });
+  return;
+}
 
+// Livre -> criar evento
 await createCalendarEvent({
   summary,
   description,
   startISO,
   endISO,
   attendees: [], // inclua e-mails só com consentimento
-  location: process.env.CLINIC_ADDRESS || "Clínica",
+  location,      // você já definiu 'location' acima
+  calendarId: process.env.GOOGLE_CALENDAR_ID || "primary",
 });
+
 
           } else {
             console.warn("Confirmação detectada, mas não consegui interpretar data/hora:", textForParser);
