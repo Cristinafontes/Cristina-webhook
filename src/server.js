@@ -639,7 +639,7 @@ const byDay = slots.reduce((acc, s) => {
     return;
   }
 
-  // NÃO agendar no passado
+// NÃO agendar no passado
 if (new Date(endISO).getTime() <= Date.now()) {
   await sendWhatsAppText({
     to: from,
@@ -647,6 +647,7 @@ if (new Date(endISO).getTime() <= Date.now()) {
   });
   return;
 }
+
 // Checar conflitos (anti-sobreposição)
 const check2 = await isSlotBlockedOrBusy({ startISO, endISO });
 if (check2.busy) {
@@ -654,19 +655,22 @@ if (check2.busy) {
   const resumo = first
     ? `Conflito com: ${first.summary} (${first.start} → ${first.end})`
     : "Horário indisponível.";
-  await sendWhatsAppText({ to: from, text: `⚠️ Esse horário ficou indisponível. ${resumo}\nPor favor, escolha outro horário.` });
+  await sendWhatsAppText({
+    to: from,
+    text: `⚠️ Esse horário ficou indisponível. ${resumo}\nPor favor, escolha outro horário.`
+  });
   return;
 }
+console.log("[CONFIRM FLOW] scheduling", { startISO, endISO });
 
-  console.log("[CONFIRM FLOW] scheduling", { startISO, endISO });
   
-// Livre -> criar
+// Livre -> criar evento
 await createCalendarEvent({
   summary,
   description,
   startISO,
   endISO,
-  location,
+  location, // já definido acima
   calendarId: process.env.GOOGLE_CALENDAR_ID || "primary",
 });
 
@@ -826,8 +830,6 @@ if (check2.busy) {
   await sendWhatsAppText({ to: from, text: `⚠️ Esse horário ficou indisponível. ${resumo}\nPor favor, escolha outro horário.` });
   return;
 }
-
-console.log("[3B FLOW] scheduling", { startISO: dt.startISO, endISO: dt.endISO });
             
 // Criar evento
 await createCalendarEvent({
