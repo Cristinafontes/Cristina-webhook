@@ -647,8 +647,6 @@ if (new Date(endISO).getTime() <= Date.now()) {
   });
   return;
 }
-
-
 // Checar conflitos (anti-sobreposição)
 const check2 = await isSlotBlockedOrBusy({ startISO, endISO });
 if (check2.busy) {
@@ -660,17 +658,17 @@ if (check2.busy) {
   return;
 }
 
-// Livre -> criar evento
+  console.log("[CONFIRM FLOW] scheduling", { startISO, endISO });
+  
+// Livre -> criar
 await createCalendarEvent({
   summary,
   description,
   startISO,
   endISO,
-  attendees: [], // inclua e-mails só com consentimento
-  location,      // já definido acima
+  location,
   calendarId: process.env.GOOGLE_CALENDAR_ID || "primary",
 });
-
 
   await sendWhatsAppText({ to: from, text: "✅ Agendei! Você receberá o convite no seu e-mail." });
   return;
@@ -795,13 +793,11 @@ const location =
     ? "Telemedicina (link será enviado)"
     : (process.env.CLINIC_ADDRESS || "Clínica");
             // NÃO agendar no passado
-if (new Date(endISO) <= guardNow) {
-  await sendWhatsAppText({
-    to: from,
-    text: "❌ Não é possível agendar em uma data/hora no passado. Por favor, escolha uma data futura."
-  });
+if (new Date(endISO).getTime() <= Date.now()) {
+  await sendWhatsAppText({ to: from, text: "❌ Não é possível agendar em uma data/hora no passado. Por favor, escolha uma data futura." });
   return;
 }
+
 
 // Checar conflitos
 const check = await isSlotBlockedOrBusy({ startISO, endISO });
@@ -815,13 +811,11 @@ if (check.busy) {
 }
 
 // NÃO agendar no passado
-if (new Date(endISO) <= guardNow) {
-  await sendWhatsAppText({
-    to: from,
-    text: "❌ Não é possível agendar no passado. Escolha uma data futura."
-  });
+if (new Date(endISO).getTime() <= Date.now()) {
+  await sendWhatsAppText({ to: from, text: "❌ Não é possível agendar em uma data/hora no passado. Por favor, escolha uma data futura." });
   return;
 }
+
 // Checar conflitos
 const check2 = await isSlotBlockedOrBusy({ startISO, endISO });
 if (check2.busy) {
@@ -833,6 +827,8 @@ if (check2.busy) {
   return;
 }
 
+console.log("[3B FLOW] scheduling", { startISO: dt.startISO, endISO: dt.endISO });
+            
 // Criar evento
 await createCalendarEvent({
   summary,
