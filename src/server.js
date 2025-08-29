@@ -705,23 +705,22 @@ if (conv && conv.messages.length > 0) {
 const answer = await askCristina({ userText: composed, userPhone: String(from) });
 
 /* ======== DISPARO DE CANCELAMENTO (formato EXATO) ======== */
-    // "Pronto! Sua consulta com a Dra. Jenifer está cancelada para o dia dd/mm/aa HH:MM"
-    try {
-      const cancelRegex = /^Pronto!\s*Sua consulta com a Dra\.?\s*Jenifer está cancelada para o dia\s+(\d{2})\/(\d{2})\/(\d{2})\s+(\d{1,2}:\d{2})\.?$/i;
-      if (answer && cancelRegex.test(answer)) {
-        const cancelURLBase = process.env.CANCEL_SERVER_URL || "https://charming-growth-production.up.railway.app";
-        const endpoint = `${cancelURLBase.replace(/\/+$/,'')}/cancel-from-message`;
-        const r = await fetch(endpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: answer }),
-        });
-        const jr = await r.json().catch(() => ({}));
-        console.log("[cancel-forward] sent to:", endpoint, "response:", jr);
-      }
-    } catch (err) {
-      console.error("[cancel-forward] error:", err?.message || err);
-    }
+try {
+  const cancelRegex = /^Pronto!\s*Sua consulta com a Dra\.?\s*Jenifer está cancelada para o dia\s+(\d{2})\/(\d{2})\/(\d{2})\s+(\d{1,2}:\d{2})\.?$/i;
+  if (answer && cancelRegex.test(answer)) {
+    const cancelURLBase = process.env.CANCEL_SERVER_URL || "https://charming-growth-production.up.railway.app";
+    const endpoint = `${cancelURLBase.replace(/\/+$/,'')}/cancel-from-message`;
+    const r = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: answer }),
+    });
+    const jr = await r.json().catch(() => ({}));
+    console.log("[cancel-forward] sent to:", endpoint, "response:", jr);
+  }
+} catch (err) {
+  console.error("[cancel-forward] error:", err?.message || err);
+}
 /* ======== FIM DO DISPARO DE CANCELAMENTO ======== */
 
 /* ======== SÓ CRIA EVENTO SE A CRISTINA CONFIRMAR NESSE FORMATO ======== */
