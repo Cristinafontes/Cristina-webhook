@@ -803,15 +803,14 @@ if (check.busy) {
 }
 
 // NÃO agendar no passado
-const now = new Date();
-if (new Date(endISO) <= now) {
+const guardNow = new Date();  // <— nome diferente para não colidir
+if (new Date(endISO) <= guardNow) {
   await sendWhatsAppText({
     to: from,
     text: "❌ Não é possível agendar em uma data/hora no passado. Por favor, escolha uma data futura."
   });
   return;
 }
-
 // Checar conflitos
 const check2 = await isSlotBlockedOrBusy({ startISO, endISO });
 if (check2.busy) {
