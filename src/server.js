@@ -622,11 +622,12 @@ if (isScheduleIntent(text)) {
       return;
     }
 
-    const byDay = slots.reduce((acc, s) => {
+const byDay = slots.reduce((acc, s) => {
   acc[s.dayLabel] = acc[s.dayLabel] || [];
-  if (acc[s.dayLabel].length < 5) acc[s.dayLabel].push(s.label); // máx 5 por dia
+  if (acc[s.dayLabel].length < 5) acc[s.dayLabel].push(s.label); // mostra até 5 por dia
   return acc;
 }, {});
+
     const linhas = Object.entries(byDay).map(([dia, horas]) => `• ${dia}: ${horas.join(", ")}`);
 
     await sendWhatsAppText({
@@ -638,9 +639,17 @@ if (isScheduleIntent(text)) {
     return;
   }
 
-// 1) passado já checado (ver guard acima)
+// NÃO agendar no passado
+const guardNow = new Date();
+if (new Date(endISO) <= guardNow) {
+  await sendWhatsAppText({
+    to: from,
+    text: "❌ Não é possível agendar em uma data/hora no passado. Por favor, escolha uma data futura."
+  });
+  return;
+}
 
-// 2) conflito (anti-sobreposição)
+// Checar conflitos (anti-sobreposição)
 const check2 = await isSlotBlockedOrBusy({ startISO, endISO });
 if (check2.busy) {
   const first = check2.conflicts?.[0];
@@ -650,14 +659,18 @@ if (check2.busy) {
   await sendWhatsAppText({ to: from, text: `⚠️ Esse horário ficou indisponível. ${resumo}\nPor favor, escolha outro horário.` });
   return;
 }
-  // Está livre -> criar evento
-  await createCalendarEvent({
-    summary,
-    description,
-    startISO: dt.startISO,
-    endISO: dt.endISO,
-    calendarId: process.env.GOOGLE_CALENDAR_ID || "primary",
-  });
+
+// Livre -> criar evento
+await createCalendarEvent({
+  summary,
+  description,
+  startISO,
+  endISO,
+  attendees: [], // inclua e-mails só com consentimento
+  location,      // já definido acima
+  calendarId: process.env.GOOGLE_CALENDAR_ID || "primary",
+});
+
 
   await sendWhatsAppText({ to: from, text: "✅ Agendei! Você receberá o convite no seu e-mail." });
   return;
@@ -786,7 +799,7 @@ const now = new Date();
 if (new Date(dt.endISO) <= now) {
   await sendWhatsAppText({
     to: from,
-    text: "❌ Não é possível agendar no passado. Escolha uma data futura."
+    text: "❌ Não é possível agendar em uma data/hora no passado. Por favor, escolha uma data futura."
   });
   return;
 }
