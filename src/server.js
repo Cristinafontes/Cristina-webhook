@@ -866,14 +866,18 @@ await createCalendarEvent({
   }
 }
 
-// =====================
+// ===================
 // Routes mapping
-// =====================
+// ===================
 app.post("/webhook/gupshup", handleInbound);
-app.post("/healthz", handleInbound); // fallback/alias POST
-app.post("/", handleInbound);        // fallback/alias
+app.post("/healthz", handleInbound); // fallback/alias POST (pode manter)
+app.post("/", handleInbound);        // fallback/alias POST
 
-// =====================
+// Health checks (GET) — NECESSÁRIOS para Railway
+app.get("/healthz", (req, res) => res.status(200).send("ok"));
+app.get("/", (req, res) => res.status(200).send("ok"));
+
+// ===================
 // Start
-// =====================
+// ===================
 app.listen(PORT, () => console.log(`Server listening on :${PORT}`));
