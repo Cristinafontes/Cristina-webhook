@@ -853,25 +853,25 @@ await createCalendarEvent({
   calendarId: process.env.GOOGLE_CALENDAR_ID || "primary",
 });
 
-         } else {
-  console.warn("Confirmação detectada, mas não consegui interpretar data/hora:", textForParser);
-}
-} catch (err) {
-  console.error("Erro ao criar evento no Google Calendar:", err?.response?.data || err);
-}
+        } else {
+          console.warn("Confirmação detectada, mas não consegui interpretar data/hora:", textForParser);
+        }
+      } catch (err) {
+        console.error("Erro ao criar evento no Google Calendar:", err?.response?.data || err);
+      }
 
-// ======= FIM DA REGRA DE CONFIRMAÇÃO =======
+      // ======= FIM DA REGRA DE CONFIRMAÇÃO =======
 
-// Memória + resposta ao paciente
-appendMessage(from, "user", userText);
-if (answer) {
-  appendMessage(from, "assistant", answer);
-  await sendWhatsAppText({ to: from, text: answer });
-}
+      // Memória + resposta ao paciente
+      appendMessage(from, "user", userText);
+      if (answer) {
+        appendMessage(from, "assistant", answer);
+        await sendWhatsAppText({ to: from, text: answer });
+      }
 
-  } catch (err) {
-    console.error("ERR inbound:", err?.response?.data || err);
-  }
+    } catch (err) {
+      console.error("ERR inbound:", err?.response?.data || err);
+    }
 }
 
 // ===================
