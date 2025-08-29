@@ -595,101 +595,67 @@ async function handleInbound(req, res) {
       return;
     }
 // === INTENÇÃO DE AGENDAMENTO + LISTA DE HORÁRIOS ===
-
 const text = String(userText ?? "").trim();
 
 function isScheduleIntent(msg = "") {
   const s = msg.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "");
   const keys = [
-  "agendar","agendamento","agendar consulta","agendar uma consulta",
-  "marcar","marcacao","marcação","marcar consulta","quero marcar",
-  "consulta","consultar","atendimento","agenda","horario","horário",
-  "disponivel","disponível","tem horario","tem horário","tem vaga",
-  "amanha","amanhã","hoje","essa semana","semana que vem","proxima semana",
-  "quando posso","posso ir","posso marcar","qual o melhor horario","quais horarios"
-];
+    "agendar","agendamento","agendar consulta","agendar uma consulta",
+    "marcar","marcacao","marcação","marcar consulta","quero marcar",
+    "consulta","consultar","atendimento","agenda","horario","horário",
+    "disponivel","disponível","tem horario","tem horário","tem vaga",
+    "amanha","amanhã","hoje","essa semana","semana que vem","proxima semana",
+    "quando posso","posso ir","posso marcar","qual o melhor horario","quais horarios"
+  ];
   return keys.some(k => s.includes(k.normalize("NFD").replace(/\p{Diacritic}/gu, "")));
 }
 
 if (isScheduleIntent(text)) {
   const dt = parseCandidateDateTime(text);
 
+  // 1) Se NÃO tem data/hora -> lista horários e ENCERRA
   if (!dt?.found) {
-    // Não tem data/hora -> oferecer horários
-    const tz = process.env.TZ || "America/Sao_Paulo";
-const slots = await listAvailableSlots({ days: 14, limit: 80 });
+    const slots = await listAvailableSlots({ days: 14, limit: 80 });
 
-// Agrupa por dia e limita a exibição (ex.: 6 horários por dia, 5 dias)
-const grouped = {};
-for (const s of slots) {
-  if (!grouped[s.dayKey]) grouped[s.dayKey] = [];
-  if (grouped[s.dayKey].length < 6) grouped[s.dayKey].push(s.timeLabel);
-}
+    const grouped = {};
+    for (const s of slots) {
+      if (!grouped[s.dayLabel]) grouped[s.dayLabel] = [];
+      if (grouped[s.dayLabel].length < 6) grouped[s.dayLabel].push(s.timeLabel);
+    }
 
-const lines = Object.entries(grouped)
-  .slice(0, 5) // mostra no máx 5 dias
-  .map(([day, times]) => `• ${day}, às ${times.join(", ")}`);
+    const lines = Object.entries(grouped)
+      .slice(0, 5)
+      .map(([day, times]) => `• ${day}, às ${times.join(", ")}`);
 
-if (!lines.length) {
+    if (!lines.length) {
+      await sendWhatsAppText({
+        to: from,
+        text: "No momento não encontrei horários futuros. Posso procurar outras datas?"
+      });
+      return;
+    }
+
+    await sendWhatsAppText({
+      to: from,
+      text: [
+        "Ótimo! Vou te enviar os horários livres. Depois me diga qual prefere.",
+        "",
+        "As opções são:",
+        ...lines,
+        "",
+        "Qual horário você prefere?"
+      ].join("\n")
+    });
+    return; // <- encerra o fluxo de listar horários
+  }
+
+  // 2) Se JÁ tem data/hora no texto -> só confirma intenção (sem criar evento aqui)
   await sendWhatsAppText({
     to: from,
-    text: "No momento não encontrei horários futuros. Posso procurar outras datas?"
+    text: "Perfeito! Vou confirmar com você. Posso prosseguir com esse agendamento?"
   });
-  return;
+  // A criação REAL do evento continua no seu bloco de CONFIRMAÇÃO (mais abaixo).
 }
-
-await sendWhatsAppText({
-  to: from,
-  text: [
-    "Ótimo! Vou te enviar os horários livres. Depois me diga qual prefere.",
-    "",
-    "As opções são:",
-    ...lines,
-    "",
-    "Qual horário você prefere?"
-  ].join("\n")
-});
-return;
-
-// NÃO agendar no passado
-if (new Date(endISO).getTime() <= Date.now()) {
-  await sendWhatsAppText({
-    to: from,
-    text: "❌ Não é possível agendar em uma data/hora no passado. Por favor, escolha uma data futura."
-  });
-  return;
-}
-
-// Checar conflitos (anti-sobreposição)
-const check2 = await isSlotBlockedOrBusy({ startISO, endISO });
-if (check2.busy) {
-  const first = check2.conflicts?.[0];
-  const resumo = first
-    ? `Conflito com: ${first.summary} (${first.start} → ${first.end})`
-    : "Horário indisponível.";
-  await sendWhatsAppText({
-    to: from,
-    text: `⚠️ Esse horário ficou indisponível. ${resumo}\nPor favor, escolha outro horário.`
-  });
-  return;
-}
-console.log("[CONFIRM FLOW] scheduling", { startISO, endISO });
-
-  
-// Livre -> criar evento
-await createCalendarEvent({
-  summary,
-  description,
-  startISO,
-  endISO,
-  location, // já definido acima
-  calendarId: process.env.GOOGLE_CALENDAR_ID || "primary",
-});
-
-  await sendWhatsAppText({ to: from, text: "✅ Agendei! Você receberá o convite no seu e-mail." });
-  return;
-}
-
 // === FIM DO BLOCO ===
 
     safeLog("INBOUND", req.body);
@@ -881,7 +847,7 @@ app.post("/webhook/gupshup", handleInbound);
 app.post("/healthz", handleInbound); // fallback/alias POST
 app.post("/", handleInbound);        // fallback/alias POST
 
-// Health checks (GET) — NECESSÁRIOS no Railway
+// Health checks (GET) — Railway
 app.get("/healthz", (req, res) => res.status(200).send("ok"));
 app.get("/", (req, res) => res.status(200).send("ok"));
 
