@@ -860,28 +860,28 @@ await createCalendarEvent({
         console.error("Erro ao criar evento no Google Calendar:", err?.response?.data || err);
       }
 
-      // ======= FIM DA REGRA DE CONFIRMAÇÃO =======
+// ======= FIM DA REGRA DE CONFIRMAÇÃO =======
 
-      // Memória + resposta ao paciente
-      appendMessage(from, "user", userText);
-      if (answer) {
-        appendMessage(from, "assistant", answer);
-        await sendWhatsAppText({ to: from, text: answer });
-      }
-
-    } catch (err) {
-      console.error("ERR inbound:", err?.response?.data || err);
-    }
+// Memória + resposta ao paciente
+appendMessage(from, "user", userText);
+if (answer) {
+  appendMessage(from, "assistant", answer);
+  await sendWhatsAppText({ to: from, text: answer });
 }
+
+} catch (err) {
+  console.error("ERR inbound:", err?.response?.data || err);
+}
+} // <== fecha a função handleInbound
 
 // ===================
 // Routes mapping
 // ===================
 app.post("/webhook/gupshup", handleInbound);
-app.post("/healthz", handleInbound); // fallback/alias POST (pode manter)
+app.post("/healthz", handleInbound); // fallback/alias POST
 app.post("/", handleInbound);        // fallback/alias POST
 
-// Health checks (GET) — NECESSÁRIOS para Railway
+// Health checks (GET) — NECESSÁRIOS no Railway
 app.get("/healthz", (req, res) => res.status(200).send("ok"));
 app.get("/", (req, res) => res.status(200).send("ok"));
 
