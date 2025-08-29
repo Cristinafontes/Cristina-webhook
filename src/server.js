@@ -786,7 +786,7 @@ const now = new Date();
 if (new Date(dt.endISO) <= now) {
   await sendWhatsAppText({
     to: from,
-    text: "❌ Não é possível agendar em uma data/hora no passado. Por favor, escolha uma data futura."
+    text: "❌ Não é possível agendar no passado. Escolha uma data futura."
   });
   return;
 }
@@ -803,11 +803,11 @@ if (check.busy) {
 }
 
 // NÃO agendar no passado
-const guardNow = new Date();  // <— nome diferente para não colidir
+const guardNow = new Date();
 if (new Date(endISO) <= guardNow) {
   await sendWhatsAppText({
     to: from,
-    text: "❌ Não é possível agendar em uma data/hora no passado. Por favor, escolha uma data futura."
+    text: "❌ Não é possível agendar no passado. Escolha uma data futura."
   });
   return;
 }
