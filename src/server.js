@@ -639,15 +639,15 @@ const byDay = slots.reduce((acc, s) => {
     return;
   }
 
-// NÃO agendar no passado
-const guardNow = new Date();
-if (new Date(endISO) <= guardNow) {
+  // NÃO agendar no passado
+if (new Date(endISO).getTime() <= Date.now()) {
   await sendWhatsAppText({
     to: from,
     text: "❌ Não é possível agendar em uma data/hora no passado. Por favor, escolha uma data futura."
   });
   return;
 }
+
 
 // Checar conflitos (anti-sobreposição)
 const check2 = await isSlotBlockedOrBusy({ startISO, endISO });
