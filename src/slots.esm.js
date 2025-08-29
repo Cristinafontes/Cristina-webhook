@@ -89,7 +89,8 @@ async function freebusy(auth, timeMin, timeMax, ids) {
  * @param {number} params.limit      Máximo de slots a retornar (padrão 10)
  * @returns Array<{startISO,endISO,label,dayLabel}>
  */
-export async function listAvailableSlots({ fromISO, days = 7, limit = 10 } = {}) {
+
+export async function listAvailableSlots({ fromISO, days = 7, limit = 100 } = {}) {
   const now = new Date();
   const from = fromISO ? new Date(fromISO) : now;
 
@@ -98,41 +99,54 @@ export async function listAvailableSlots({ fromISO, days = 7, limit = 10 } = {})
   if (BLOCK_CAL_ID && BLOCK_CAL_ID !== CALENDAR_ID) ids.push(BLOCK_CAL_ID);
 
   const out = [];
+
   // varrer por dia
-  for (let i=0; i<days; i++) {
-    const day = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate() + i, 0,0,0));
-    const dow = (new Date(day)).getUTCDay(); // 0..6
+  for (let i = 0; i < days; i++) {
+    const day = new Date(Date.UTC(
+      from.getUTCFullYear(),
+      from.getUTCMonth(),
+      from.getUTCDate() + i, 0, 0, 0
+    ));
+
+    // usar getDay() no fuso local (0=Dom, 1=Seg...)
+    const dow = (new Date(day)).getDay();
     const ranges = WORKING_HOURS[String(dow)];
     if (!ranges || !ranges.length) continue;
 
-    // calcular time window do dia
-    const dayStart = isoAt(day.toISOString(), ranges[0][0]);
-    const last = ranges[ranges.length-1];
-    const dayEnd = isoAt(day.toISOString(), last[1]);
+    // pegar busy slots do Google
+    const busy = await getBusyTimes(auth, ids, day);
 
-    // buscar busy do dia
-    const busy = await freebusy(auth, dayStart, dayEnd, ids);
+    // percorrer todos os ranges do expediente
+    for (const range of ranges) {
+      const dayStart = isoAt(day.toISOString(), range[0]);
+      const dayEnd   = isoAt(day.toISOString(), range[1]);
 
-    // construir slots
-    for (const [sISO, eISO] of iterateSlots(day.toISOString(), ranges)) {
-      // pular slots muito próximos (janela de antecedência)
-      if (new Date(sISO) < new Date(now.getTime() + ADVANCE_MIN*60000)) continue;
+      // gerar slots dentro do range
+      for (let t = new Date(dayStart); t < new Date(dayEnd); t.setMinutes(t.getMinutes() + SLOT_MINUTES)) {
+        const sISO = new Date(t).toISOString();
+        const eISO = new Date(t.getTime() + SLOT_MINUTES * 60000).toISOString();
 
-      // se houver interseção com qualquer busy, descarta
-      const overlap = busy.some(b =>
-        !(new Date(eISO) <= new Date(b.start) || new Date(sISO) >= new Date(b.end))
-      );
-      if (overlap) continue;
+        // pular se estiver muito em cima da hora
+        if (new Date(sISO) < new Date(now.getTime() + ADVANCE_MIN * 60000)) continue;
 
-      const weekday = ["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"][dow];
-      out.push({
-        startISO: sISO,
-        endISO: eISO,
-        label: `${fmtHour(sISO)}–${fmtHour(eISO)}`,
-        dayLabel: `${weekday} ${pad(toLocal(sISO).getDate())}/${pad(toLocal(sISO).getMonth()+1)}`,
-      });
-      if (out.length >= limit) return out;
+        // se houver interseção com qualquer busy, descarta
+        const overlap = busy.some(b =>
+          !(new Date(eISO) <= new Date(b.start) || new Date(sISO) >= new Date(b.end))
+        );
+        if (overlap) continue;
+
+        const weekday = ["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"][dow];
+        out.push({
+          startISO: sISO,
+          endISO: eISO,
+          label: `${fmtHour(sISO)}-${fmtHour(eISO)}`,
+          dayLabel: `${weekday} ${pad(toLocal(sISO).getDate())}/${pad(toLocal(sISO).getMonth()+1)}`,
+        });
+
+        if (out.length >= limit) return out;
+      }
     }
   }
+
   return out;
 }
