@@ -794,9 +794,9 @@ const location =
   modality === "Telemedicina"
     ? "Telemedicina (link será enviado)"
     : (process.env.CLINIC_ADDRESS || "Clínica");
-// NÃO agendar no passado
-const now = new Date();
-if (new Date(dt.endISO) <= now) {
+            // NÃO agendar no passado
+const guardNow = new Date();
+if (new Date(endISO) <= guardNow) {
   await sendWhatsAppText({
     to: from,
     text: "❌ Não é possível agendar em uma data/hora no passado. Por favor, escolha uma data futura."
@@ -805,7 +805,7 @@ if (new Date(dt.endISO) <= now) {
 }
 
 // Checar conflitos
-const check = await isSlotBlockedOrBusy({ startISO: dt.startISO, endISO: dt.endISO });
+const check = await isSlotBlockedOrBusy({ startISO, endISO });
 if (check.busy) {
   const first = check.conflicts?.[0];
   const resumo = first
