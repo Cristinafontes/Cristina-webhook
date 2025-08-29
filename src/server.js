@@ -11,6 +11,9 @@ import { askCristina } from "./openai.js";
 import { sendWhatsAppText } from "./gupshup.js";
 import { safeLog } from "./redact.js";
 
+import { isSlotBlockedOrBusy } from "./availability.esm.js";
+import { listAvailableSlots } from "./slots.esm.js";
+
 // >>> CALENDÁRIO (somente nossas funções)
 import { createCalendarEvent } from "./google.esm.js";
 import { parseCandidateDateTime } from "./utils.esm.js";
@@ -591,6 +594,76 @@ async function handleInbound(req, res) {
       });
       return;
     }
+// === INTENÇÃO DE AGENDAMENTO + LISTA DE HORÁRIOS ===
+
+const text = String(userText ?? "").trim();
+
+function isScheduleIntent(msg = "") {
+  const s = msg.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "");
+  const keys = [
+    "agendar","agendamento","marcar","marcacao","marcação",
+    "consulta","horario","horário","disponivel","disponível",
+    "amanha","amanhã","hoje","essa semana","semana que vem",
+    "posso ir","quando posso","tem vaga","tem horario","tem horário"
+  ];
+  return keys.some(k => s.includes(k.normalize("NFD").replace(/\p{Diacritic}/gu, "")));
+}
+
+if (isScheduleIntent(text)) {
+  const dt = parseCandidateDateTime(text);
+
+  if (!dt?.found) {
+    // Não tem data/hora -> oferecer horários
+    const slots = await listAvailableSlots({ days: 7, limit: 8 });
+    if (!slots.length) {
+      await sendWhatsAppText({ to: from, text: "No momento não tenho horários livres nos próximos dias. Posso procurar outras datas?" });
+      return;
+    }
+
+    const byDay = slots.reduce((acc, s) => {
+      acc[s.dayLabel] = acc[s.dayLabel] || [];
+      acc[s.dayLabel].push(s.label);
+      return acc;
+    }, {});
+    const linhas = Object.entries(byDay).map(([dia, horas]) => `• ${dia}: ${horas.join(", ")}`);
+
+    await sendWhatsAppText({
+      to: from,
+      text:
+        "Horários disponíveis:\n" + linhas.join("\n") +
+        "\n\nResponda com a opção desejada (ex.: 'qua 15:30')."
+    });
+    return;
+  }
+
+  // Se já veio com dia/hora -> checar conflitos
+  const check = await isSlotBlockedOrBusy({ startISO: dt.startISO, endISO: dt.endISO });
+  if (check.busy) {
+    const first = check.conflicts?.[0];
+    const resumo = first
+      ? `Conflito com: ${first.summary} (${first.start} → ${first.end})`
+      : "Horário indisponível.";
+    await sendWhatsAppText({
+      to: from,
+      text: `⚠️ Esse horário está indisponível. ${resumo}\nPor favor, escolha outro horário.`
+    });
+    return;
+  }
+
+  // Está livre -> criar evento
+  await createCalendarEvent({
+    summary,
+    description,
+    startISO: dt.startISO,
+    endISO: dt.endISO,
+    calendarId: process.env.GOOGLE_CALENDAR_ID || "primary",
+  });
+
+  await sendWhatsAppText({ to: from, text: "✅ Agendei! Você receberá o convite no seu e-mail." });
+  return;
+}
+
+// === FIM DO BLOCO ===
 
     safeLog("INBOUND", req.body);
 
