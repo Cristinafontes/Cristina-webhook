@@ -616,17 +616,17 @@ if (isScheduleIntent(text)) {
 
   if (!dt?.found) {
     // Não tem data/hora -> oferecer horários
-    const slots = await listAvailableSlots({ days: 7, limit: 8 });
+    const slots = await listAvailableSlots({ days: 14, limit: 40 });
     if (!slots.length) {
       await sendWhatsAppText({ to: from, text: "No momento não tenho horários livres nos próximos dias. Posso procurar outras datas?" });
       return;
     }
 
     const byDay = slots.reduce((acc, s) => {
-      acc[s.dayLabel] = acc[s.dayLabel] || [];
-      acc[s.dayLabel].push(s.label);
-      return acc;
-    }, {});
+  acc[s.dayLabel] = acc[s.dayLabel] || [];
+  if (acc[s.dayLabel].length < 5) acc[s.dayLabel].push(s.label); // máx 5 por dia
+  return acc;
+}, {});
     const linhas = Object.entries(byDay).map(([dia, horas]) => `• ${dia}: ${horas.join(", ")}`);
 
     await sendWhatsAppText({
@@ -638,20 +638,18 @@ if (isScheduleIntent(text)) {
     return;
   }
 
-  // Se já veio com dia/hora -> checar conflitos
-  const check = await isSlotBlockedOrBusy({ startISO: dt.startISO, endISO: dt.endISO });
-  if (check.busy) {
-    const first = check.conflicts?.[0];
-    const resumo = first
-      ? `Conflito com: ${first.summary} (${first.start} → ${first.end})`
-      : "Horário indisponível.";
-    await sendWhatsAppText({
-      to: from,
-      text: `⚠️ Esse horário está indisponível. ${resumo}\nPor favor, escolha outro horário.`
-    });
-    return;
-  }
+// 1) passado já checado (ver guard acima)
 
+// 2) conflito (anti-sobreposição)
+const check2 = await isSlotBlockedOrBusy({ startISO, endISO });
+if (check2.busy) {
+  const first = check2.conflicts?.[0];
+  const resumo = first
+    ? `Conflito com: ${first.summary} (${first.start} → ${first.end})`
+    : "Horário indisponível.";
+  await sendWhatsAppText({ to: from, text: `⚠️ Esse horário ficou indisponível. ${resumo}\nPor favor, escolha outro horário.` });
+  return;
+}
   // Está livre -> criar evento
   await createCalendarEvent({
     summary,
@@ -783,7 +781,38 @@ const location =
   modality === "Telemedicina"
     ? "Telemedicina (link será enviado)"
     : (process.env.CLINIC_ADDRESS || "Clínica");
-// Checar conflito (anti-sobreposição) ANTES de criar
+// NÃO agendar no passado
+const now = new Date();
+if (new Date(dt.endISO) <= now) {
+  await sendWhatsAppText({
+    to: from,
+    text: "❌ Não é possível agendar em uma data/hora no passado. Por favor, escolha uma data futura."
+  });
+  return;
+}
+
+// Checar conflitos
+const check = await isSlotBlockedOrBusy({ startISO: dt.startISO, endISO: dt.endISO });
+if (check.busy) {
+  const first = check.conflicts?.[0];
+  const resumo = first
+    ? `Conflito com: ${first.summary} (${first.start} → ${first.end})`
+    : "Horário indisponível.";
+  await sendWhatsAppText({ to: from, text: `⚠️ Esse horário está indisponível. ${resumo}\nPor favor, escolha outro horário.` });
+  return;
+}
+
+// NÃO agendar no passado
+const now = new Date();
+if (new Date(endISO) <= now) {
+  await sendWhatsAppText({
+    to: from,
+    text: "❌ Não é possível agendar em uma data/hora no passado. Por favor, escolha uma data futura."
+  });
+  return;
+}
+
+// Checar conflitos
 const check2 = await isSlotBlockedOrBusy({ startISO, endISO });
 if (check2.busy) {
   const first = check2.conflicts?.[0];
@@ -794,17 +823,15 @@ if (check2.busy) {
   return;
 }
 
-// Livre -> criar evento
+// Criar evento
 await createCalendarEvent({
   summary,
   description,
   startISO,
   endISO,
-  attendees: [], // inclua e-mails só com consentimento
-  location,      // você já definiu 'location' acima
+  location,
   calendarId: process.env.GOOGLE_CALENDAR_ID || "primary",
 });
-
 
           } else {
             console.warn("Confirmação detectada, mas não consegui interpretar data/hora:", textForParser);
