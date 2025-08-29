@@ -795,7 +795,6 @@ const location =
     ? "Telemedicina (link será enviado)"
     : (process.env.CLINIC_ADDRESS || "Clínica");
             // NÃO agendar no passado
-const guardNow = new Date();
 if (new Date(endISO) <= guardNow) {
   await sendWhatsAppText({
     to: from,
@@ -816,7 +815,6 @@ if (check.busy) {
 }
 
 // NÃO agendar no passado
-const guardNow = new Date();
 if (new Date(endISO) <= guardNow) {
   await sendWhatsAppText({
     to: from,
