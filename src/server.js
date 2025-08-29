@@ -395,7 +395,7 @@ console.log("[NAME PICKED]", name);
 
   // 3) Fallback garantido
   if (!reason) reason = "Medicina da Dor";
-// ====== MODALIDADE (3=Presencial, 4=Telemedicina; aceita texto; prioriza o mais recente) ======
+  // ====== MODALIDADE (3=Presencial, 4=Telemedicina; aceita texto; prioriza o mais recente) ======
 let modality = null;
 
 // 1) Coleta texto de qualquer formato (payload e histórico)
@@ -456,11 +456,11 @@ const texts = [];
 // a) payload atual (última mensagem do usuário)
 pickTexts(payload).forEach((s) => texts.push(s));
 
-// b) histórico (varre de trás pra frente; pode não ter "role", então não filtramos por role)
-if (Array.isArray(conversation)) {
-  for (let i = conversation.length - 1; i >= 0; i--) {
-    pickTexts(conversation[i]).forEach((s) => texts.push(s));
-  }
+// b) histórico correto: usar conversation.messages (quando existir)
+const histMsgs = Array.isArray(conversation?.messages) ? conversation.messages : [];
+for (let i = histMsgs.length - 1; i >= 0; i--) {
+  // Não precisamos filtrar por role aqui, pois algumas integrações não incluem 'role'
+  pickTexts(histMsgs[i]).forEach((s) => texts.push(s));
 }
 
 // 4) Decide: percorre do mais recente para o mais antigo
@@ -476,11 +476,12 @@ for (const t of texts) {
   }
 }
 
-// 5) Fallback
+// 5) Fallback (se nada detectado)
 if (!modality) modality = "Presencial";
 
 // Log de diagnóstico
 console.log("[MODALITY PICKED]", modality, "| sample(lastText)=", (texts[0] || "").slice(0, 120));
+
   return { name, phoneFormatted, reason, modality };
 }
 
