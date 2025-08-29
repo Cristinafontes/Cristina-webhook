@@ -616,28 +616,40 @@ if (isScheduleIntent(text)) {
 
   if (!dt?.found) {
     // Não tem data/hora -> oferecer horários
-    const slots = await listAvailableSlots({ days: 14, limit: 40 });
-    if (!slots.length) {
-      await sendWhatsAppText({ to: from, text: "No momento não tenho horários livres nos próximos dias. Posso procurar outras datas?" });
-      return;
-    }
+    const tz = process.env.TZ || "America/Sao_Paulo";
+const slots = await listAvailableSlots({ days: 14, limit: 80 });
 
-const byDay = slots.reduce((acc, s) => {
-  acc[s.dayLabel] = acc[s.dayLabel] || [];
-  if (acc[s.dayLabel].length < 5) acc[s.dayLabel].push(s.label); // mostra até 5 por dia
-  return acc;
-}, {});
+// Agrupa por dia e limita a exibição (ex.: 6 horários por dia, 5 dias)
+const grouped = {};
+for (const s of slots) {
+  if (!grouped[s.dayKey]) grouped[s.dayKey] = [];
+  if (grouped[s.dayKey].length < 6) grouped[s.dayKey].push(s.timeLabel);
+}
 
-    const linhas = Object.entries(byDay).map(([dia, horas]) => `• ${dia}: ${horas.join(", ")}`);
+const lines = Object.entries(grouped)
+  .slice(0, 5) // mostra no máx 5 dias
+  .map(([day, times]) => `• ${day}, às ${times.join(", ")}`);
 
-    await sendWhatsAppText({
-      to: from,
-      text:
-        "Horários disponíveis:\n" + linhas.join("\n") +
-        "\n\nResponda com a opção desejada (ex.: 'qua 15:30')."
-    });
-    return;
-  }
+if (!lines.length) {
+  await sendWhatsAppText({
+    to: from,
+    text: "No momento não encontrei horários futuros. Posso procurar outras datas?"
+  });
+  return;
+}
+
+await sendWhatsAppText({
+  to: from,
+  text: [
+    "Ótimo! Vou te enviar os horários livres. Depois me diga qual prefere.",
+    "",
+    "As opções são:",
+    ...lines,
+    "",
+    "Qual horário você prefere?"
+  ].join("\n")
+});
+return;
 
 // NÃO agendar no passado
 if (new Date(endISO).getTime() <= Date.now()) {
