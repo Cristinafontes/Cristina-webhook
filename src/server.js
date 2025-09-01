@@ -14,6 +14,8 @@ import { safeLog } from "./redact.js";
 // >>> CALENDÁRIO (somente nossas funções)
 import { createCalendarEvent } from "./google.esm.js";
 import { parseCandidateDateTime } from "./utils.esm.js";
+mport { isSlotBlockedOrBusy } from "./lib/availability.esm.js";
+import { listAvailableSlots } from "./lib/slots.esm.js";
 // <<< FIM CALENDÁRIO
 
 dotenv.config();
@@ -591,6 +593,29 @@ async function handleInbound(req, res) {
       });
       return;
     }
+// === ATALHO: se o paciente responder "opção 3" (ou só "3"), injeta a data/hora do slot escolhido ===
+try {
+  const convMem = getConversation(from);
+  const mOpt = (userText || "").match(/\bop(c[aã]o|ção)?\s*(\d+)\b|\b(\d+)\b/i);
+  if (mOpt && convMem?.lastSlots && Array.isArray(convMem.lastSlots)) {
+    const idx = Number(mOpt[2] || mOpt[3]) - 1;
+    const chosen = convMem.lastSlots[idx];
+    if (chosen) {
+      // transforma em texto que sua IA já entende
+      const dt = new Date(chosen.startISO);
+      const tz = process.env.TZ || "America/Sao_Paulo";
+      const pad = (n) => String(n).padStart(2, "0");
+      const fmt = new Intl.DateTimeFormat("pt-BR", {
+        timeZone: tz, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"
+      }).formatToParts(dt)
+        .reduce((acc, p) => (acc[p.type] = p.value, acc), {});
+      const ddmmhhmm = `${fmt.day}/${fmt.month} ${fmt.hour}:${fmt.minute}`;
+      userText = `Quero agendar nesse horário: ${ddmmhhmm}`;
+    }
+  }
+} catch (e) {
+  console.error("[option-pick] erro:", e?.message || e);
+}
 
     safeLog("INBOUND", req.body);
 
@@ -634,6 +659,31 @@ async function handleInbound(req, res) {
 
     // Resposta da secretária (IA)
     const answer = await askCristina({ userText: composed, userPhone: String(from) });
+
+    // === SE A IA MENCIONAR QUE VAI ENVIAR HORÁRIOS, ANEXA A LISTA GERADA DO CALENDÁRIO ===
+let finalAnswer = answer;
+try {
+  const shouldList = /vou te enviar os hor[aá]rios livres/i.test(answer || "");
+  if (shouldList) {
+    const slots = await listAvailableSlots({ days: 7, limit: 10 }); // próximos 7 dias
+    if (!slots.length) {
+      finalAnswer = (answer || "") + "\n\nNo momento não encontrei horários livres nos próximos dias.";
+    } else {
+      const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`);
+      finalAnswer =
+        (answer || "") +
+        "\n\nOpções disponíveis:\n" +
+        linhas.join("\n") +
+        "\n\nSe preferir, pode responder com a opção (ex.: 'opção 3') ou digitar a data e hora.";
+      // guarda na memória da conversa para permitir "opção 3"
+      const convMem = ensureConversation(from);
+      convMem.lastSlots = slots;
+      convMem.updatedAt = Date.now();
+    }
+  }
+} catch (e) {
+  console.error("[slots-append] erro:", e?.message || e);
+}
 
     
     // ======== DISPARO DE CANCELAMENTO (formato EXATO) ========
@@ -708,6 +758,33 @@ const location =
   modality === "Telemedicina"
     ? "Telemedicina (link será enviado)"
     : (process.env.CLINIC_ADDRESS || "Clínica");
+// === CHECA CONFLITO NO CALENDÁRIO ANTES DE CRIAR ===
+const { busy, conflicts } = await isSlotBlockedOrBusy({ startISO, endISO });
+if (busy) {
+  let msg = "Esse horário acabou de ficar indisponível.";
+  if (conflicts?.length) {
+    const tz = process.env.TZ || "America/Sao_Paulo";
+    const lines = conflicts.map(c => {
+      const when = new Date(c.start);
+      const lbl = when.toLocaleString("pt-BR", { timeZone: tz });
+      return `• ${lbl} — ${c.summary || "Compromisso"}`;
+    });
+    msg += "\n\nConflitos encontrados:\n" + lines.join("\n");
+  }
+  const alternativas = await listAvailableSlots({ fromISO: startISO, days: 7, limit: 5 });
+  if (alternativas?.length) {
+    msg += "\n\nPosso te oferecer estes horários:\n" +
+      alternativas.map((s,i)=> `${i+1}) ${s.dayLabel} ${s.label}`).join("\n");
+    // guarda na memória para permitir "opção N"
+    const convMem = ensureConversation(from);
+    convMem.lastSlots = alternativas;
+    convMem.updatedAt = Date.now();
+  } else {
+    msg += "\n\nNos próximos dias não há janelas livres. Posso procurar mais adiante.";
+  }
+  await sendWhatsAppText({ to: from, text: msg });
+  return; // não cria evento, sai daqui
+}
 
 await createCalendarEvent({
   summary,
@@ -730,10 +807,10 @@ await createCalendarEvent({
 
     // Memória + resposta ao paciente
     appendMessage(from, "user", userText);
-    if (answer) {
-      appendMessage(from, "assistant", answer);
-      await sendWhatsAppText({ to: from, text: answer });
-    }
+    if (finalAnswer) {
+  appendMessage(from, "assistant", finalAnswer);
+  await sendWhatsAppText({ to: from, text: finalAnswer });
+}
   } catch (err) {
     console.error("ERR inbound:", err?.response?.data || err);
   }
