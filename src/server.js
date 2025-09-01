@@ -14,8 +14,9 @@ import { safeLog } from "./redact.js";
 // >>> CALENDÁRIO (somente nossas funções)
 import { createCalendarEvent } from "./google.esm.js";
 import { parseCandidateDateTime } from "./utils.esm.js";
-mport { isSlotBlockedOrBusy } from "./lib/availability.esm.js";
-import { listAvailableSlots } from "./lib/slots.esm.js";
+import { isSlotBlockedOrBusy } from "./availability.esm.js";
+import { listAvailableSlots } from "./slots.esm.js";
+
 // <<< FIM CALENDÁRIO
 
 dotenv.config();
