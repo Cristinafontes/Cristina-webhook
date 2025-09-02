@@ -12,6 +12,27 @@ const CALENDAR_ID   = process.env.GOOGLE_CALENDAR_ID || "primary";
 const BLOCK_CAL_ID  = process.env.GOOGLE_BLOCK_CALENDAR_ID || "";
 const TZ            = process.env.TZ || "America/Sao_Paulo";
 
+// === Helpers de fuso horário ===
+// Sempre que formos formatar ou montar rótulos, usamos o TZ explicitamente.
+function toTZ(d) {
+  // garante que temos um Date; o fuso é aplicado na FORMATAÇÃO (Intl) mais adiante
+  return d instanceof Date ? d : new Date(d);
+}
+function startOfDayLocal(d) {
+  const x = toTZ(d);
+  return new Date(x.getFullYear(), x.getMonth(), x.getDate(), 0, 0, 0, 0);
+}
+// Formatações com TZ (vamos usar no passo 2.2)
+function formatDow(d) {
+  return toTZ(d).toLocaleDateString("pt-BR", { weekday: "short", timeZone: TZ });
+}
+function formatDate(d) {
+  return toTZ(d).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "2-digit", timeZone: TZ });
+}
+function formatTime(d) {
+  return toTZ(d).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", timeZone: TZ });
+}
+
 // expediente por dia da semana (0=Dom,1=Seg,...)
 // exemplo: {"1":[["08:00","12:00"],["13:30","17:30"]],"2":[["08:00","12:00"],["13:30","17:30"]], ...}
 let WORKING_HOURS = {};
@@ -91,8 +112,16 @@ async function freebusy(auth, timeMin, timeMax, ids) {
  */
 
 export async function listAvailableSlots({ fromISO, days = 7, limit = 100 } = {}) {
-  const now = new Date();
-  const from = fromISO ? new Date(fromISO) : now;
+  let from = fromISO ? new Date(fromISO) : new Date();
+
+// respeitar antecedência mínima (em horas)
+const advMin = Number(process.env.ADVANCE_MIN_HOURS || 1);
+if (advMin > 0) {
+  from = new Date(from.getTime() + advMin * 60 * 60 * 1000);
+}
+
+// alinhar para o início do dia no fuso local
+from = startOfDayLocal(from);
 
   const auth = getAuth();
   const ids = [CALENDAR_ID];
@@ -102,51 +131,72 @@ export async function listAvailableSlots({ fromISO, days = 7, limit = 100 } = {}
 
   // varrer por dia
   for (let i = 0; i < days; i++) {
-    const day = new Date(Date.UTC(
-      from.getUTCFullYear(),
-      from.getUTCMonth(),
-      from.getUTCDate() + i, 0, 0, 0
-    ));
+    const base = toTZ(from);
+const day = new Date(
+  base.getFullYear(),
+  base.getMonth(),
+  base.getDate() + i, 0, 0, 0
+);
+
+
 
     // usar getDay() no fuso local (0=Dom, 1=Seg...)
-    const dow = (new Date(day)).getDay();
+    const dow = toTZ(day).getDay();
     const ranges = WORKING_HOURS[String(dow)];
     if (!ranges || !ranges.length) continue;
 
     // pegar busy slots do Google
     const busy = await getBusyTimes(auth, ids, day);
 
-    // percorrer todos os ranges do expediente
-    for (const range of ranges) {
-      const dayStart = isoAt(day.toISOString(), range[0]);
-      const dayEnd   = isoAt(day.toISOString(), range[1]);
+const busyN = (busy || []).map(b => ({
+  start: b.start instanceof Date ? b.start : new Date(b.start),
+  end:   b.end   instanceof Date ? b.end   : new Date(b.end),
+}));
 
-      // gerar slots dentro do range
-      for (let t = new Date(dayStart); t < new Date(dayEnd); t.setMinutes(t.getMinutes() + SLOT_MINUTES)) {
-        const sISO = new Date(t).toISOString();
-        const eISO = new Date(t.getTime() + SLOT_MINUTES * 60000).toISOString();
+function buildDate(d, hhmm) {
+  const [h, m] = String(hhmm).split(":").map(Number);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), h || 0, m || 0, 0, 0);
+}
 
-        // pular se estiver muito em cima da hora
-        if (new Date(sISO) < new Date(now.getTime() + ADVANCE_MIN * 60000)) continue;
+const stepMin = Number(process.env.SLOT_MINUTES || 60);
+const durMin  = stepMin;
+const cutoff  = new Date(Date.now() + Number(process.env.ADVANCE_MIN_HOURS || 1) * 60 * 60 * 1000);
 
-        // se houver interseção com qualquer busy, descarta
-        const overlap = busy.some(b =>
-          !(new Date(eISO) <= new Date(b.start) || new Date(sISO) >= new Date(b.end))
-        );
-        if (overlap) continue;
+for (const [hhIni, hhFim] of ranges) {
+  let winStart = buildDate(day, hhIni);
+  let winEnd   = buildDate(day, hhFim);
 
-        const weekday = ["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"][dow];
-        out.push({
-          startISO: sISO,
-          endISO: eISO,
-          label: `${fmtHour(sISO)}-${fmtHour(eISO)}`,
-          dayLabel: `${weekday} ${pad(toLocal(sISO).getDate())}/${pad(toLocal(sISO).getMonth()+1)}`,
-        });
-
-        if (out.length >= limit) return out;
-      }
-    }
+  const buf = Number(process.env.BUFFER_MINUTES || 0);
+  if (buf > 0) {
+    winStart = new Date(winStart.getTime() + buf * 60000);
+    winEnd   = new Date(winEnd.getTime()   - buf * 60000);
   }
 
-  return out;
+  const startMs = winStart.getTime();
+  const endMs   = winEnd.getTime();
+
+  for (let t = startMs; t + durMin * 60000 <= endMs; t += stepMin * 60000) {
+    const start = new Date(t);
+    const end   = new Date(t + durMin * 60000);
+
+    if (start < cutoff) continue;
+
+    const overlap = busyN.some(b => !(end <= b.start || start >= b.end));
+    if (overlap) continue;
+
+    const dowShort = formatDow(start).replace(".", "");
+    const dayLabel = dowShort.charAt(0).toUpperCase() + dowShort.slice(1, 3);
+    const label    = `${formatDate(start)} ${formatTime(start)}`;
+
+    out.push({
+      startISO: start.toISOString(),
+      endISO: end.toISOString(),
+      dayLabel,
+      label,
+    });
+
+    if (out.length >= limit) return out;
+  }
 }
+
+return out;
