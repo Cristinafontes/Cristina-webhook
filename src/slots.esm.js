@@ -195,9 +195,9 @@ for (const [hhIni, hhFim] of ranges) {
       label,
     });
 
-    if (out.length >= limit) return out;
-  }
-}
-
+       if (out.length >= limit) return out;
+  } 
+}   
+}   
 return out;
-}
+}   
