@@ -38,9 +38,9 @@ function formatTime(d) {
 let WORKING_HOURS = {};
 try { WORKING_HOURS = JSON.parse(process.env.WORKING_HOURS_JSON || "{}"); } catch { WORKING_HOURS = {}; }
 
-const SLOT_MINUTES = Number(process.env.SLOT_MINUTES || 30);
-const BUFFER_MIN   = Number(process.env.BUFFER_MINUTES || 0);  // minutos a mais antes/depois
-const ADVANCE_MIN  = Number(process.env.ADVANCE_MIN_HOURS || 1) * 60; // não ofertar slots muito em cima da hora
+const SLOT_MINUTES = Number(process.env.SLOT_MINUTES || 60); // <- 60 por padrão
+const BUFFER_MIN   = Number(process.env.BUFFER_MINUTES || 0);
+const ADVANCE_MIN  = Number(process.env.ADVANCE_MIN_HOURS || 1) * 60;
 
 function getAuth() {
   if (!CLIENT_ID || !CLIENT_SECRET || !REDIRECT_URI || !REFRESH_TOKEN) {
