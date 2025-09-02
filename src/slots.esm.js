@@ -131,14 +131,7 @@ export async function listAvailableSlots({ fromISO, days = 7, limit = 100 } = {}
 
   // varrer por dia
   for (let i = 0; i < days; i++) {
-    const base = toTZ(from);
-const day = new Date(
-  base.getFullYear(),
-  base.getMonth(),
-  base.getDate() + i, 0, 0, 0
-);
-
-
+    const day = new Date(from.getTime() + i * 24 * 60 * 60 * 1000);
 
     // usar getDay() no fuso local (0=Dom, 1=Seg...)
     const dow = toTZ(day).getDay();
@@ -175,9 +168,12 @@ for (const [hhIni, hhFim] of ranges) {
   const startMs = winStart.getTime();
   const endMs   = winEnd.getTime();
 
-  for (let t = startMs; t + durMin * 60000 <= endMs; t += stepMin * 60000) {
-    const start = new Date(t);
-    const end   = new Date(t + durMin * 60000);
+  for (let t = startMs; t + durMin*60000 <= endMs; t += stepMin*60000) {
+  const start = new Date(t);
+  const end   = new Date(t + durMin*60000);
+
+  // última consulta deve terminar até endMs
+  if (end > endMs) break;
 
     if (start < cutoff) continue;
 
