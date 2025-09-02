@@ -3,7 +3,7 @@
 // Gera janelas de X minutos dentro do expediente configurado.
 
 import { google } from "googleapis";
-import { getBusyTimes } from "./utils.esm.js"; // usa util existente do projeto
+import { getBusyTimes } from "./google.esm.js"; // pega do módulo correto
 
 // ===== ENV =====
 const CLIENT_ID     = process.env.GOOGLE_CLIENT_ID;
