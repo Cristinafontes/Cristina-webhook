@@ -155,6 +155,12 @@ const stepMin = Number(process.env.SLOT_MINUTES || 60);
 const durMin  = stepMin;
 const cutoff  = new Date(Date.now() + Number(process.env.ADVANCE_MIN_HOURS || 1) * 60 * 60 * 1000);
 
+console.log("[slots] candidato", start.toISOString(), "→", end.toISOString());
+if (start < cutoff) { console.log("  - descartado: antes do cutoff"); continue; }
+const overlap = busyN.some(b => !(end <= b.start || start >= b.end));
+if (overlap) { console.log("  - descartado: conflito com", busyN); continue; }
+console.log("  + OK");
+    
 for (const [hhIni, hhFim] of ranges) {
   let winStart = buildDate(day, hhIni);
   let winEnd   = buildDate(day, hhFim);
@@ -168,12 +174,12 @@ for (const [hhIni, hhFim] of ranges) {
   const startMs = winStart.getTime();
   const endMs   = winEnd.getTime();
 
-  for (let t = startMs; t + durMin*60000 <= endMs; t += stepMin*60000) {
+ for (let t = startMs; t < endMs; t += stepMin * 60000) {
   const start = new Date(t);
-  const end   = new Date(t + durMin*60000);
+  const end   = new Date(t + durMin * 60000);
 
-  // última consulta deve terminar até endMs
-  if (end > endMs) break;
+  if (end > endMs) break;   // <- corta 15:30–16:30
+
 
     if (start < cutoff) continue;
 
