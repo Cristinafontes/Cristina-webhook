@@ -200,3 +200,4 @@ for (const [hhIni, hhFim] of ranges) {
 }
 
 return out;
+}
