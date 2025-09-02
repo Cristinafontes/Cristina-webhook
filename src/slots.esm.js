@@ -114,14 +114,14 @@ async function freebusy(auth, timeMin, timeMax, ids) {
 export async function listAvailableSlots({ fromISO, days = 7, limit = 100 } = {}) {
   let from = fromISO ? new Date(fromISO) : new Date();
 
-// respeitar antecedência mínima (em horas)
-const advMin = Number(process.env.ADVANCE_MIN_HOURS || 1);
-if (advMin > 0) {
-  from = new Date(from.getTime() + advMin * 60 * 60 * 1000);
-}
+  // respeitar antecedência mínima (em horas)
+  const advMin = Number(process.env.ADVANCE_MIN_HOURS || 1);
+  if (advMin > 0) {
+    from = new Date(from.getTime() + advMin * 60 * 60 * 1000);
+  }
 
-// alinhar para o início do dia no fuso local
-from = startOfDayLocal(from);
+  // Não alinhar para início do dia aqui
+
 
   const auth = getAuth();
   const ids = [CALENDAR_ID];
