@@ -764,7 +764,14 @@ const location =
   modality === "Telemedicina"
     ? "Telemedicina (link será enviado)"
     : (process.env.CLINIC_ADDRESS || "Clínica");
-// === CHECA CONFLITO NO CALENDÁRIO ANTES DE CRIAR ===
+
+            // 1) Envia aviso imediato ao paciente
+await sendWhatsAppText({
+  to: from,
+  text: "Perfeito, vou verificar a disponibilidade e te confirmo já."
+});
+            
+            // === CHECA CONFLITO NO CALENDÁRIO ANTES DE CRIAR ===
 const { busy, conflicts } = await isSlotBlockedOrBusy({ startISO, endISO });
 if (busy) {
   let msg = "Esse horário acabou de ficar indisponível.";
@@ -819,18 +826,6 @@ await createCalendarEvent({
     // Memória + resposta ao paciente
     appendMessage(from, "user", userText);
     if (finalAnswer) {
-  // remove frases indesejadas da resposta antes de enviar
-  finalAnswer = finalAnswer
-    .replace(/vou verificar a disponibilidade.*?(confirmo já)?/gi, "")
-    .replace(/vou verificar.*?(disponibilidade|agenda)?/gi, "")
-    .replace(/deixe[- ]?me checar.*?/gi, "")
-    .replace(/vou confirmar.*?/gi, "")
-    .replace(/vou conferir.*?/gi, "")
-    .replace(/já te confirmo.*?/gi, "");
-
-  // limpa espaços extras que sobrarem
-  finalAnswer = finalAnswer.trim();
-
   appendMessage(from, "assistant", finalAnswer);
   await sendWhatsAppText({ to: from, text: finalAnswer });
 }
