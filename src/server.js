@@ -666,16 +666,16 @@ let finalAnswer = answer;
 try {
   const shouldList = /vou te enviar os hor[aá]rios livres/i.test(answer || "");
   if (shouldList) {
-    const slots = await listAvailableSlots({ days: 7, limit: 10 }); // próximos 7 dias
+    const slots = await listAvailableSlots({ days: 3, limit: 10 }); // só os próximos 3 dias
     if (!slots.length) {
       finalAnswer = (answer || "") + "\n\nNo momento não encontrei horários livres nos próximos dias.";
     } else {
       const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`);
-      finalAnswer =
-        (answer || "") +
-        "\n\nOpções disponíveis:\n" +
-        linhas.join("\n") +
-        "\n\nSe preferir, pode responder com a opção (ex.: 'opção 3') ou digitar a data e hora.";
+finalAnswer =
+  "Opções disponíveis:\n" +
+  linhas.join("\n") +
+  "\n\nSe preferir, pode responder com a opção (ex.: 'opção 3') ou digitar a data e hora.";
+      
       // guarda na memória da conversa para permitir "opção 3"
       const convMem = ensureConversation(from);
       convMem.lastSlots = slots;
@@ -772,7 +772,7 @@ if (busy) {
     });
     msg += "\n\nConflitos encontrados:\n" + lines.join("\n");
   }
-  const alternativas = await listAvailableSlots({ fromISO: startISO, days: 7, limit: 5 });
+  const alternativas = await listAvailableSlots({ fromISO: startISO, days: 3, limit: 5 });
   if (alternativas?.length) {
     msg += "\n\nPosso te oferecer estes horários:\n" +
       alternativas.map((s,i)=> `${i+1}) ${s.dayLabel} ${s.label}`).join("\n");
