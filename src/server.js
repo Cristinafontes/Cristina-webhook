@@ -666,7 +666,12 @@ let finalAnswer = answer;
 try {
   const shouldList = /vou te enviar os hor[aá]rios livres/i.test(answer || "");
   if (shouldList) {
-    const slots = await listAvailableSlots({ days: 3, limit: 10 }); // só os próximos 3 dias
+    const slots = await listAvailableSlots({
+  fromISO: new Date().toISOString(), // força começar de hoje
+  days: 7,                           // só os próximos 7 dias
+  limit: 10
+});
+
     if (!slots.length) {
       finalAnswer = (answer || "") + "\n\nNo momento não encontrei horários livres nos próximos dias.";
     } else {
@@ -772,7 +777,12 @@ if (busy) {
     });
     msg += "\n\nConflitos encontrados:\n" + lines.join("\n");
   }
-  const alternativas = await listAvailableSlots({ fromISO: startISO, days: 3, limit: 5 });
+  const alternativas = await listAvailableSlots({
+  fromISO: startISO,
+  days: 3,   // só os próximos 3 dias como alternativa
+  limit: 5
+});
+
   if (alternativas?.length) {
     msg += "\n\nPosso te oferecer estes horários:\n" +
       alternativas.map((s,i)=> `${i+1}) ${s.dayLabel} ${s.label}`).join("\n");
@@ -809,6 +819,18 @@ await createCalendarEvent({
     // Memória + resposta ao paciente
     appendMessage(from, "user", userText);
     if (finalAnswer) {
+  // remove frases indesejadas da resposta antes de enviar
+  finalAnswer = finalAnswer
+    .replace(/vou verificar a disponibilidade.*?(confirmo já)?/gi, "")
+    .replace(/vou verificar.*?(disponibilidade|agenda)?/gi, "")
+    .replace(/deixe[- ]?me checar.*?/gi, "")
+    .replace(/vou confirmar.*?/gi, "")
+    .replace(/vou conferir.*?/gi, "")
+    .replace(/já te confirmo.*?/gi, "");
+
+  // limpa espaços extras que sobrarem
+  finalAnswer = finalAnswer.trim();
+
   appendMessage(from, "assistant", finalAnswer);
   await sendWhatsAppText({ to: from, text: finalAnswer });
 }
