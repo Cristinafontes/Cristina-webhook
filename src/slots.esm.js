@@ -26,7 +26,6 @@ const BUFFER_MIN   = Number(process.env.BUFFER_MINUTES || 0);
 const ADVANCE_MIN  = Number(process.env.ADVANCE_MIN_HOURS || 1) * 60; // em minutos
 
 // ===== Helpers =====
-const TZ = process.env.TZ || "America/Sao_Paulo";
 
 function fmtWeekday(d) {
   // "seg.", "ter.", ... -> "Seg", "Ter", ...
