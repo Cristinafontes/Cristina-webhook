@@ -26,10 +26,25 @@ const BUFFER_MIN   = Number(process.env.BUFFER_MINUTES || 0);
 const ADVANCE_MIN  = Number(process.env.ADVANCE_MIN_HOURS || 1) * 60; // em minutos
 
 // ===== Helpers =====
-function fmtDow(d){ return new Intl.DateTimeFormat("pt-BR",{weekday:"short", timeZone: TZ}).format(d).replace(".",""); }
-function fmtDate(d){ return new Intl.DateTimeFormat("pt-BR",{day:"2-digit", month:"2-digit", year:"2-digit", timeZone: TZ}).format(d); }
-function fmtTime(d){ return new Intl.DateTimeFormat("pt-BR",{hour:"2-digit", minute:"2-digit", timeZone: TZ}).format(d); }
-function getDowTZ(d){ const k=fmtDow(d).toLowerCase().slice(0,3); const map={dom:0,seg:1,ter:2,qua:3,qui:4,sex:5,sab:6,"sáb":6}; return map[k] ?? new Date(d).getUTCDay(); }
+const TZ = process.env.TZ || "America/Sao_Paulo";
+
+function fmtWeekday(d) {
+  // "seg.", "ter.", ... -> "Seg", "Ter", ...
+  const raw = new Intl.DateTimeFormat("pt-BR", { weekday: "short", timeZone: TZ }).format(d);
+  const clean = raw.replace(".", "");
+  return clean.charAt(0).toUpperCase() + clean.slice(1);
+}
+function fmtDate(d) {
+  return new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "2-digit", year: "2-digit", timeZone: TZ }).format(d);
+}
+function fmtTime(d) {
+  return new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit", timeZone: TZ }).format(d);
+}
+// 0=Dom..6=Sáb calculado de forma robusta
+function getDowTZ(d) {
+  const wd = new Intl.DateTimeFormat("en-US", { weekday: "short", timeZone: TZ }).format(d).toLowerCase();
+  return ["sun","mon","tue","wed","thu","fri","sat"].indexOf(wd);
+}
 
 // Constrói um Date (UTC) correspondente ao horário local em TZ_OFFSET_HOURS do mesmo dia de `base`.
 function atTZ(base, hhmm) {
@@ -120,11 +135,17 @@ export async function listAvailableSlots({ fromISO, days=7, limit=100 } = {}){
         const overlap = busyN.some(b => !(end <= b.start || start >= b.end));
         if (overlap) continue;
 
-        const dowShort = fmtDow(start);
-        const dayLabel = dowShort.charAt(0).toUpperCase() + dowShort.slice(1,3);
-        const label    = `${fmtDate(start)} ${fmtTime(start)}`;
+        // Gera rótulos SEMPRE a partir do MESMO Date e MESMO TZ
+const dayLabel = fmtWeekday(start);                     // "Seg", "Ter", ...
+const label    = `${fmtDate(start)} ${fmtTime(start)}`; // "18/09/25 09:00"
 
-        out.push({ startISO: start.toISOString(), endISO: end.toISOString(), dayLabel, label });
+out.push({
+  startISO: start.toISOString(),
+  endISO:   end.toISOString(),
+  dayLabel,
+  label,
+});
+
         if (out.length >= limit) return out;
       }
     }
