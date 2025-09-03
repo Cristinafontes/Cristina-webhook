@@ -825,7 +825,19 @@ await createCalendarEvent({
 
     // Memória + resposta ao paciente
     appendMessage(from, "user", userText);
-    if (finalAnswer) {
+   if (finalAnswer) {
+  // remove frases indesejadas da resposta antes de enviar
+  finalAnswer = finalAnswer
+    .replace(/vou verificar a disponibilidade.*?(confirmo já)?/gi, "")
+    .replace(/vou verificar.*?(disponibilidade|agenda)?/gi, "")
+    .replace(/deixe[- ]?me checar.*?/gi, "")
+    .replace(/vou confirmar.*?/gi, "")
+    .replace(/vou conferir.*?/gi, "")
+    .replace(/já te confirmo.*?/gi, "");
+
+  // limpa espaços extras que sobrarem
+  finalAnswer = finalAnswer.trim();
+
   appendMessage(from, "assistant", finalAnswer);
   await sendWhatsAppText({ to: from, text: finalAnswer });
 }
