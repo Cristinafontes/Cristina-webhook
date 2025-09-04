@@ -694,6 +694,7 @@ try {
 
     // Resposta da secretária (IA)
     const answer = await askCristina({ userText: composed, userPhone: String(from) });
+let finalAnswer = answer;
 
 // === SE A IA MENCIONAR QUE VAI ENVIAR HORÁRIOS, ANEXA JÁ NO LAYOUT NOVO (sem numeração) ===
 try {
