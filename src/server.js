@@ -15,7 +15,13 @@ import { safeLog } from "./redact.js";
 import { createCalendarEvent } from "./google.esm.js";
 import { parseCandidateDateTime } from "./utils.esm.js";
 import { isSlotBlockedOrBusy } from "./availability.esm.js";
-import { listAvailableSlots } from "./slots.esm.js";
+import {
+  listAvailableSlots,
+  listAvailableSlotsByDay,
+  findDayOrNextWithSlots,
+  formatSlotsForPatient,
+} from "./slots.esm.js";
+
 
 // <<< FIM CALENDÁRIO
 
@@ -617,6 +623,34 @@ try {
 } catch (e) {
   console.error("[option-pick] erro:", e?.message || e);
 }
+// === INTERPRETAR PEDIDO DE DATA FUTURA & RESPONDER COM LAYOUT NOVO (sem "opção N") ===
+try {
+  const tz = process.env.TZ || "America/Sao_Paulo";
+  const parsed = parseCandidateDateTime(userText, tz);
+
+  // Considera "consulta por data" quando parser encontrou uma data,
+  // e o texto aparenta ser pergunta por disponibilidade (tem/horário/agenda/dia/semana etc.)
+  const isLikelyDateQuery =
+    parsed?.found &&
+    /\b(tem|teria|hor[aá]rio|horarios|horários|agenda|dia|semana|dispon[ií]vel)\b/i.test(userText || "");
+
+  if (isLikelyDateQuery) {
+    // Tenta o dia exato; se vazio, próxima data com horários (até 21 dias)
+    const targetISO = parsed.startISO; // o dia/hora que o paciente citou
+    const { status, groups } = await findDayOrNextWithSlots({
+      targetISO,
+      searchDays: 21,     // pode ajustar para 14, 30, etc.
+      limitPerDay: 12     // até 12 horários por dia
+    });
+
+    const text = formatSlotsForPatient(groups);
+    await sendWhatsAppText({ to: from, text });
+    return; // já respondemos; não precisa seguir para a IA
+  }
+} catch (e) {
+  console.error("[date-query] erro:", e?.message || e);
+}
+// === FIM DATA FUTURA ===
 
     safeLog("INBOUND", req.body);
 
@@ -661,26 +695,23 @@ try {
     // Resposta da secretária (IA)
     const answer = await askCristina({ userText: composed, userPhone: String(from) });
 
-    // === SE A IA MENCIONAR QUE VAI ENVIAR HORÁRIOS, ANEXA A LISTA GERADA DO CALENDÁRIO ===
-let finalAnswer = answer;
+// === SE A IA MENCIONAR QUE VAI ENVIAR HORÁRIOS, ANEXA JÁ NO LAYOUT NOVO (sem numeração) ===
 try {
   const shouldList = /vou te enviar os hor[aá]rios livres/i.test(answer || "");
   if (shouldList) {
-    const slots = await listAvailableSlots({ days: 7, limit: 10 }); // próximos 7 dias
-    if (!slots.length) {
-      finalAnswer = (answer || "") + "\n\nNo momento não encontrei horários livres nos próximos dias.";
+    // Próximos 7 dias, agrupado por dia, até 12 horários por dia
+    const groups = await listAvailableSlotsByDay({
+      fromISO: new Date().toISOString(),
+      days: 7,
+      limitPerDay: 12
+    });
+
+    if (!groups.length) {
+      finalAnswer = "No momento não encontrei janelas livres nos próximos dias.";
     } else {
-      const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`);
-      finalAnswer =
-        (answer || "") +
-        "\n\nOpções disponíveis:\n" +
-        linhas.join("\n") +
-        "\n\nSe preferir, pode responder com a opção (ex.: 'opção 3') ou digitar a data e hora.";
-      // guarda na memória da conversa para permitir "opção 3"
-      const convMem = ensureConversation(from);
-      convMem.lastSlots = slots;
-      convMem.updatedAt = Date.now();
+      finalAnswer = formatSlotsForPatient(groups);
     }
+    // Observação: NÃO gravamos lastSlots aqui, pois você pediu sem "opção N".
   }
 } catch (e) {
   console.error("[slots-append] erro:", e?.message || e);
