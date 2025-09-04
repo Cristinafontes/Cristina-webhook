@@ -629,17 +629,14 @@ try {
   const parsed = parseCandidateDateTime(userText, tz);
 
   // Considera "consulta por data" quando parser encontrou uma data,
-  // e o texto aparenta ser pergunta por disponibilidade (tem/horário/agenda/dia/semana etc.)
-  const isLikelyDateQuery =
-    parsed?.found &&
-    /\b(tem|teria|hor[aá]rio|horarios|horários|agenda|dia|semana|dispon[ií]vel)\b/i.test(userText || "");
+  // Se o parser achou uma data (ex.: "20/09"), já trata como consulta por data
+if (parsed?.found) {
 
-  if (isLikelyDateQuery) {
     // Tenta o dia exato; se vazio, próxima data com horários (até 21 dias)
     const targetISO = parsed.startISO; // o dia/hora que o paciente citou
     const { status, groups } = await findDayOrNextWithSlots({
       targetISO,
-      searchDays: 21,     // pode ajustar para 14, 30, etc.
+      searchDays: 60,     // pode ajustar para 14, 30, etc.
       limitPerDay: 12     // até 12 horários por dia
     });
 
