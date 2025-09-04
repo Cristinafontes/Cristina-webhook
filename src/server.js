@@ -617,6 +617,72 @@ try {
 } catch (e) {
   console.error("[option-pick] erro:", e?.message || e);
 }
+// === INTERPRETAR DATA FUTURA & LISTAR HORÁRIOS (bypass na IA quando a pessoa pede um dia) ===
+try {
+  const tz = process.env.TZ || "America/Sao_Paulo";
+  // Tenta extrair uma data/hora do texto do paciente (aceita "15/09", "15/09 14h", "15/09 às 14:30"...)
+  const parsed = parseCandidateDateTime(userText, tz);
+
+  // Heurística simples: considerar "consulta por data" quando:
+  // - parser encontrou uma data; e
+  // - a mensagem contém alguma pista de pergunta por disponibilidade (tem/horário/agenda/dia/semana etc.)
+  const isLikelyDateQuery = parsed?.found && /\b(tem|teria|hor[aá]rio|agenda|dia|semana|horarios|horários|dispon[ií]vel)\b/i.test(userText || "");
+
+  if (isLikelyDateQuery) {
+    // Normaliza para o INÍCIO do DIA pedido (UTC) para garantir que todos os slots daquele dia entrem.
+    const dt = new Date(parsed.startISO);
+    const dayStartUTC = new Date(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate(), 0, 0, 0)).toISOString();
+
+    // 1) Tenta primeiro SOMENTE o dia solicitado
+    let slots = await listAvailableSlots({ fromISO: dayStartUTC, days: 1, limit: 50 });
+
+    if (slots && slots.length) {
+      // Mostra apenas os horários desse dia (já vem em ordem do mais próximo para o mais tarde)
+      const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`);
+      const msg =
+        "Opções disponíveis no dia solicitado:\n" +
+        linhas.join("\n") +
+        "\n\nResponda com a opção (ex.: 'opção 2') ou digite a data e hora.";
+      // guarda para permitir "opção N"
+      const convMem = ensureConversation(from);
+      convMem.lastSlots = slots;
+      convMem.updatedAt = Date.now();
+      await sendWhatsAppText({ to: from, text: msg });
+      return; // já respondemos; não precisa chamar a IA agora
+    }
+
+    // 2) Se NÃO houver horários nesse dia, procurar a PRÓXIMA DATA COM JANELAS (ex.: dentro de 14 dias)
+    const forward = await listAvailableSlots({ fromISO: dayStartUTC, days: 14, limit: 100 });
+
+    if (forward && forward.length) {
+      // Agrupa por data (dd/mm/aa) usando o prefixo da label
+      const getDateKey = (lbl) => (lbl || "").slice(0, 8); // "dd/mm/aa"
+      const firstKey = getDateKey(forward[0].label);
+      const sameDay = forward.filter(s => getDateKey(s.label) === firstKey).slice(0, 10);
+
+      const linhas = sameDay.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`);
+      const msg =
+        "Nesse dia não há horários, mas encontrei a data mais próxima com disponibilidade:\n" +
+        linhas.join("\n") +
+        "\n\nSe gostar, responda com a opção (ex.: 'opção 1').";
+      const convMem = ensureConversation(from);
+      convMem.lastSlots = sameDay;
+      convMem.updatedAt = Date.now();
+      await sendWhatsAppText({ to: from, text: msg });
+      return;
+    }
+
+    // 3) Se não achar nada nas próximas 2 semanas
+    await sendWhatsAppText({
+      to: from,
+      text: "No momento não encontrei janelas livres próximas dessa data. Posso procurar mais adiante ou em outro dia da semana."
+    });
+    return;
+  }
+} catch (e) {
+  console.error("[date-query] erro:", e?.message || e);
+}
+// === FIM DATA FUTURA ===
 
     safeLog("INBOUND", req.body);
 
