@@ -622,27 +622,38 @@ try {
   }
 } catch (e) {
   console.error("[option-pick] erro:", e?.message || e);
-}
-// === INTERPRETAR PEDIDO DE DATA FUTURA & RESPONDER COM LAYOUT NOVO (sem "opção N") ===
+}// === INTERPRETAR PEDIDO DE DATA FUTURA & RESPONDER COM LAYOUT NOVO (sem "opção N") ===
 try {
   const tz = process.env.TZ || "America/Sao_Paulo";
   const parsed = parseCandidateDateTime(userText, tz);
 
-  // Considera "consulta por data" quando parser encontrou uma data,
-  // Se o parser achou uma data (ex.: "20/09"), já trata como consulta por data
-if (parsed?.found) {
+  // 1) Preferência: parser padrão (data + hora)
+  let targetISO = parsed?.found ? parsed.startISO : null;
 
-    // Tenta o dia exato; se vazio, próxima data com horários (até 21 dias)
-    const targetISO = parsed.startISO; // o dia/hora que o paciente citou
+  // 2) Fallback: aceitar "só a data" (ex.: "12/09" ou "12/09/25")
+  if (!targetISO) {
+    const m = (userText || "").match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/);
+    if (m) {
+      const dd = parseInt(m[1], 10);
+      const mm = parseInt(m[2], 10);
+      let yyyy = m[3] ? parseInt(m[3], 10) : new Date().getFullYear();
+      if (yyyy < 100) yyyy += 2000; // "25" -> 2025
+      // 00:00 UTC do dia informado; a função findDayOrNextWithSlots normaliza para o dia local
+      targetISO = new Date(Date.UTC(yyyy, mm - 1, dd, 0, 0, 0)).toISOString();
+    }
+  }
+
+  // 3) Se identificamos uma data (com ou sem hora), listar o dia ou o próximo com vagas
+  if (targetISO) {
     const { status, groups } = await findDayOrNextWithSlots({
       targetISO,
-      searchDays: 60,     // pode ajustar para 14, 30, etc.
-      limitPerDay: 12     // até 12 horários por dia
+      searchDays: 60,   // pode ajustar para 14/30/90
+      limitPerDay: 12   // quantos horários por dia mostrar
     });
 
     const text = formatSlotsForPatient(groups);
     await sendWhatsAppText({ to: from, text });
-    return; // já respondemos; não precisa seguir para a IA
+    return; // não passa para a IA
   }
 } catch (e) {
   console.error("[date-query] erro:", e?.message || e);
