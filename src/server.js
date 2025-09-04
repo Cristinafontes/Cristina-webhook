@@ -557,6 +557,102 @@ setInterval(() => {
     if (v.updatedAt < cutoff) conversations.delete(k);
   }
 }, 30 * 60 * 1000);
+// ===== Novas funções utilitárias para datas pedidas pelo paciente =====
+const TZ = process.env.TZ || "America/Sao_Paulo";
+
+// Normaliza para o início do dia em TZ (mantém coerência com slots.esm)
+function startOfDayTZ(d) {
+  const dt = new Date(d);
+  // "00:00 TZ" em UTC: somar o offset fixo (igual ao de slots.esm)
+  const off = Number(process.env.TZ_OFFSET_HOURS ?? -3);
+  return new Date(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate(), -off, 0, 0, 0));
+}
+
+// Reconhece "amanhã", "depois de amanhã", "próxima segunda", "segunda que vem", "dd/mm[/aa]",
+// e "seg 10/09" (se dia e mês não batem com o weekday, preferimos o weekday).
+function parseDesiredDate(text) {
+  if (!text) return null;
+  const t = String(text).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+
+  const now = new Date();
+  const today = startOfDayTZ(now);
+
+  // Mapas
+  const wdMap = { "domingo":0,"dom":0,"segunda":1,"seg":1,"terca":2,"terça":2,"ter":2,"quarta":3,"qua":3,"quinta":4,"qui":4,"sexta":5,"sex":5,"sabado":6,"sábado":6,"sab":6 };
+  const monthBiasYear = (m) => {
+    // se estivermos no fim do ano e o mês pedido é "janeiro", empurrar pro próximo ano
+    const y = today.getUTCFullYear();
+    const currM = today.getUTCMonth(); // 0..11
+    return (m < currM - 6) ? y + 1 : y;
+  };
+
+  // 1) termos relativos
+  if (/\bamanh[aã]|\bamanha\b/.test(t)) {
+    return startOfDayTZ(new Date(today.getTime() + 1*24*60*60*1000));
+  }
+  if (/\bdepois de amanh[aã]|\bdepois de amanha\b/.test(t)) {
+    return startOfDayTZ(new Date(today.getTime() + 2*24*60*60*1000));
+  }
+
+  // 2) próxima/esta "segunda/terca/..."
+  let wdRequested = null;
+  const wdMatch = t.match(/\b(proxima|pr[oó]xima|esta|semana que vem)?\s*(domingo|dom|segunda|seg|ter[cç]a|ter|quarta|qua|quinta|qui|sexta|sex|s[áa]bado|sab)\b/);
+  if (wdMatch) {
+    wdRequested = wdMap[wdMatch[2]];
+  }
+
+  // 3) data explícita dd/mm[/aa]
+  let day=null, month=null, year=null;
+  const dm = t.match(/\b(\d{1,2})\s*[/\-]\s*(\d{1,2})(?:\s*[/\-]\s*(\d{2,4}))?\b/);
+  if (dm) {
+    day   = Math.min(31, Math.max(1, Number(dm[1])));
+    month = Math.min(12, Math.max(1, Number(dm[2]))) - 1;
+    year  = dm[3] ? (Number(dm[3]) < 100 ? 2000 + Number(dm[3]) : Number(dm[3])) : monthBiasYear(month);
+  }
+
+  // Casos:
+  // A) Só weekday -> próxima ocorrência >= hoje
+  if (wdRequested !== null && !dm) {
+    const base = today;
+    const baseW = base.getUTCDay();
+    const delta = (wdRequested - baseW + 7) % 7 || 7; // sempre a próxima, não hoje
+    return startOfDayTZ(new Date(base.getTime() + delta*24*60*60*1000));
+  }
+
+  // B) Só dd/mm -> aquela data (no ano inferido)
+  if (dm && wdRequested === null) {
+    const d = startOfDayTZ(new Date(Date.UTC(year, month, day)));
+    // se a data ficou no passado, tenta o mesmo dia/mês do próximo ano
+    if (d.getTime() < today.getTime()) {
+      return startOfDayTZ(new Date(Date.UTC(year+1, month, day)));
+    }
+    return d;
+  }
+
+  // C) dd/mm + weekday -> preferimos o weekday coerente "a partir do dd/mm"
+  if (dm && wdRequested !== null) {
+    let d = startOfDayTZ(new Date(Date.UTC(year, month, day)));
+    if (d.getTime() < today.getTime()) d = startOfDayTZ(new Date(Date.UTC(year+1, month, day)));
+    const w = d.getUTCDay();
+    const delta = (wdRequested - w + 7) % 7; // pode ser 0 (mesmo dia)
+    return startOfDayTZ(new Date(d.getTime() + delta*24*60*60*1000));
+  }
+
+  return null;
+}
+
+// Busca slots no dia pedido; se não houver, avança até achar (ex.: até 14 dias)
+async function listSlotsClosestTo({ targetISO, lookaheadDays=14, dailyLimit=10 }) {
+  let cursor = startOfDayTZ(new Date(targetISO));
+  for (let i = 0; i <= lookaheadDays; i++) {
+    const startISO = new Date(cursor.getTime() + (i*24*60*60*1000)).toISOString();
+    const slots = await listAvailableSlots({ fromISO: startISO, days: 1, limit: dailyLimit });
+    if (slots?.length) {
+      return { slots, forDateISO: startISO };
+    }
+  }
+  return { slots: [], forDateISO: null };
+}
 
 // =====================
 // Inbound handler
@@ -626,6 +722,43 @@ try {
       await sendWhatsAppText({ to: from, text: "Conversa reiniciada. Como posso ajudar?" });
       return;
     }
+// ===== Atalho: paciente pediu uma data específica? Liste horários daquele dia (ou do próximo com vagas) =====
+try {
+  const desired = parseDesiredDate(userText);
+  if (desired) {
+    const { slots, forDateISO } = await listSlotsClosestTo({ targetISO: desired.toISOString(), lookaheadDays: 14, dailyLimit: 10 });
+
+    if (!slots.length) {
+      await sendWhatsAppText({
+        to: from,
+        text: "Procurei nessa data e nas seguintes, mas não encontrei horários disponíveis nas próximas duas semanas. Posso ampliar a busca?"
+      });
+      return; // já respondemos
+    }
+
+    // Se o dia encontrado não é exatamente o pedido, avise a aproximação
+    const requestedStr = new Intl.DateTimeFormat("pt-BR", { timeZone: TZ, day: "2-digit", month: "2-digit", weekday: "long" }).format(desired);
+    const foundStr     = new Intl.DateTimeFormat("pt-BR", { timeZone: TZ, day: "2-digit", month: "2-digit", weekday: "long" }).format(new Date(forDateISO));
+
+    const header = (startOfDayTZ(desired).getTime() === startOfDayTZ(new Date(forDateISO)).getTime())
+      ? `Horários em ${requestedStr}:`
+      : `Não havia horários em ${requestedStr}. Seguem os mais próximos em ${foundStr}:`;
+
+    const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`);
+    await sendWhatsAppText({
+      to: from,
+      text: `${header}\n${linhas.join("\n")}\n\nResponda com a opção (ex.: "opção 3") ou digite a data e hora.`
+    });
+
+    // Guarda para permitir "opção N"
+    const convMem = ensureConversation(from);
+    convMem.lastSlots = slots;
+    convMem.updatedAt = Date.now();
+    return; // NÃO chama a IA — já atendemos a intenção com precisão
+  }
+} catch (e) {
+  console.error("[date-intent] erro:", e?.message || e);
+}
 
     // Montagem de contexto para a IA
     const conv = getConversation(from);
