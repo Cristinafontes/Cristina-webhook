@@ -15,7 +15,13 @@ import { safeLog } from "./redact.js";
 import { createCalendarEvent } from "./google.esm.js";
 import { parseCandidateDateTime } from "./utils.esm.js";
 import { isSlotBlockedOrBusy } from "./availability.esm.js";
-import { listAvailableSlots } from "./slots.esm.js";
+import { 
+  listAvailableSlots, 
+  listAvailableSlotsByDay, 
+  findDayOrNextWithSlots, 
+  formatSlotsForPatient 
+} from "./slots.esm.js";
+
 
 // <<< FIM CALENDÁRIO
 
@@ -664,31 +670,96 @@ try {
     // === SE A IA MENCIONAR QUE VAI ENVIAR HORÁRIOS, ANEXA A LISTA GERADA DO CALENDÁRIO ===
 let finalAnswer = answer;
 try {
-  const shouldList = /vou te enviar os hor[aá]rios livres/i.test(answer || "");
-  if (shouldList) {
-    const slots = await listAvailableSlots({
-  fromISO: new Date().toISOString(), // força começar de hoje
-  days: 7,                           // só os próximos 7 dias
-  limit: 10
-});
+  // Dispara quando a IA anunciar que vai listar horários (ou usar gatilho manual "ENVIE_HORARIOS")
+  const shouldList =
+    /vou te enviar os hor[aá]rios livres/i.test(answer || "") ||
+    /ENVIE_HORARIOS/i.test(answer || "");
 
-    if (!slots.length) {
-      finalAnswer = (answer || "") + "\n\nNo momento não encontrei horários livres nos próximos dias.";
+  if (shouldList) {
+    // ===== 1) Tentar descobrir "QUAL DIA" o paciente quer =====
+    // A IA pode ter falado "do dia 25/10" no próprio 'answer'.
+    // Se não achar no 'answer', tenta no último texto do paciente (userText).
+    const findAnchorISO = (txt) => {
+      try {
+        const { found, startISO } = parseCandidateDateTime(
+          String(txt || ""),
+          process.env.TZ || "America/Sao_Paulo"
+        );
+        // Se encontrou algo no futuro, usa como âncora (início do dia)
+        if (found) {
+          const d = new Date(startISO);
+          const now = new Date();
+          if (d.getTime() > now.getTime()) {
+            // normaliza para 00:00 do dia em questão
+            const d0 = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0);
+            return d0.toISOString();
+          }
+        }
+      } catch {}
+      return null;
+    };
+
+    let anchorISO = findAnchorISO(answer) || findAnchorISO(userText);
+
+    // ===== 2) Buscar slots ====
+    // Regra:
+    // - Se o paciente pediu um DIA específico -> traz só aquele dia (days=1).
+    // - Se não pediu um dia -> próximos 5 dias corridos.
+    let pretty, flat;
+
+    if (anchorISO) {
+      // a) AGRUPADO por dia (apenas esse dia)
+      const grouped = await listAvailableSlotsByDay({
+        fromISO: anchorISO,
+        days: 1,
+        limitPerDay: 12, // até 12 horários nesse dia
+      });
+      pretty = formatSlotsForPatient(grouped);
+
+      // b) LISTA "PLANA" numerada (para permitir 'opção 3')
+      flat = await listAvailableSlots({
+        fromISO: anchorISO,
+        days: 1,
+        limit: 20
+      });
     } else {
-      const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`);
-finalAnswer =
-  "Opções disponíveis:\n" +
-  linhas.join("\n") +
-  "\n\nSe preferir, pode responder com a opção (ex.: 'opção 3') ou digitar a data e hora.";
-      
-      // guarda na memória da conversa para permitir "opção 3"
+      // Sem âncora -> janela padrão a partir de agora
+      const grouped = await listAvailableSlotsByDay({
+        fromISO: new Date().toISOString(),
+        days: 5,
+        limitPerDay: 6,
+      });
+      pretty = formatSlotsForPatient(grouped);
+
+      flat = await listAvailableSlots({
+        fromISO: new Date().toISOString(),
+        days: 5,
+        limit: 10
+      });
+    }
+
+    // ===== 3) Montagem da resposta final =====
+    if (!flat || !flat.length) {
+      finalAnswer = (answer || "") +
+        "\n\nNo momento não encontrei horários livres para essa data/período. Pode me indicar outro dia?";
+    } else {
+      const numerada = flat.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`).join("\n");
+      finalAnswer = [
+        (answer || "").trim(),
+        "",
+        pretty,
+        "Se preferir, pode responder com a opção (ex.: 'opção 3') ou digitar a data e hora.",
+        numerada
+      ].filter(Boolean).join("\n");
+
+      // Guarda os slots para o atalho "opção N"
       const convMem = ensureConversation(from);
-      convMem.lastSlots = slots;
+      convMem.lastSlots = flat;
       convMem.updatedAt = Date.now();
     }
   }
 } catch (e) {
-  console.error("[slots-append] erro:", e?.message || e);
+  console.error("[slots-anchored-append] erro:", e?.message || e);
 }
 
     
