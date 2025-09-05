@@ -693,9 +693,11 @@ const userNorm = String(userText || "")
 
     // Se a IA convidou para agendar, marca um "convite recente" na memória (para destravar "Sim/Ok")
 const convMem = ensureConversation(from);
-if (/\b(gostaria de agendar|vamos agendar|quer agendar|posso te enviar os hor[aá]rios|te envio os hor[aá]rios)\b/i.test(answer || "")) {
+if (/\b(deseja agendar|gostaria de agendar|vamos agendar|quer agendar|posso te enviar os hor[aá]rios|te envio os hor[aá]rios)\b/i
+      .test(String(answer || "").toLowerCase())) {
   convMem.lastInviteAt = Date.now();
 }
+
 
 // ===== Intenção do PACIENTE de ver horários =====
 const baseIntent = /\b(agendar|marcar|remarcar|consulta|horario|disponivel|tem\s+vaga|proximos?\s+horarios?)\b/i
@@ -743,6 +745,15 @@ try {
     (affirmative && invitedRecently) ||
     hasDateRequest;
 
+  console.log("[INTENT FLAGS]", {
+  baseIntent,
+  affirmative,
+  hasDateRequest,
+  invitedRecently,
+  shouldList
+});
+
+  
   if (shouldList) {
     // ===== 1) Detecta a âncora de data/hora (se a paciente pediu um dia/horário) =====
     const findAnchorISO = (txt) => {
