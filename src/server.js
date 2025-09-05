@@ -685,58 +685,68 @@ try {
 
     // Resposta da secretária (IA)
     let answer = await askCristina({ userText: composed, userPhone: String(from) });
+    // Texto do paciente normalizado (sem acentos/maiusc.)
+const userNorm = String(userText || "")
+  .toLowerCase()
+  .normalize("NFD")
+  .replace(/\p{Diacritic}/gu, "");
+
+// Se a IA já convidou para agendar, marque "convite recente"
+const convMem = ensureConversation(from);
+if (/\b(gostaria de agendar|vamos agendar|quer agendar|posso te enviar os hor[aá]rios|te envio os hor[aá]rios)\b/i.test(answer || "")) {
+  convMem.lastInviteAt = Date.now();
+}
     // Se a IA convidou para agendar, marca um "convite recente" na memória (para destravar "Sim/Ok")
 const convMem = ensureConversation(from);
 if (/\b(gostaria de agendar|vamos agendar|quer agendar|posso te enviar os hor[aá]rios|te envio os hor[aá]rios)\b/i.test(answer || "")) {
   convMem.lastInviteAt = Date.now();
 }
 
-// ===== Disparo por intenção do PACIENTE (sem depender da frase da IA) =====
-const baseIntent =
-  /\b(agendar|marcar|remarcar|consulta|hor[áa]rio|dispon[ií]vel|tem\s+vaga|pr[óo]ximos?\s+hor[aá]rios?)\b/i
-    .test(userText || "");
+// ===== Intenção do PACIENTE de ver horários =====
+const baseIntent = /\b(agendar|marcar|remarcar|consulta|horario|disponivel|tem\s+vaga|proximos?\s+horarios?)\b/i
+  .test(userNorm);
 
-// Afirmações curtas (Sim/Ok/Vamos/Quero), consideradas intenção SE houve convite recente da IA
-const affirmative =
-  /\b(sim|ok|vamos|quero|pode ser|isso|certo|perfeito|t[áa]\s*bom)\b/i.test(userText || "");
+// Afirmativas curtas ("sim/ok/quero")
+const affirmative = /\b(sim|ok|vamos|quero|pode ser|isso|certo|perfeito|ta bom|tudo bem)\b/i
+  .test(userNorm);
 
-// Detecta se o paciente já digitou uma data/horário (ex.: "23/09 09:00", "dia 25/10")
+// Paciente digitou data/hora (ex.: "23/09 09:00", "dia 25/10")
 let hasDateRequest = false;
 try {
   const probe = parseCandidateDateTime(String(userText || ""), process.env.TZ || "America/Sao_Paulo");
   hasDateRequest = !!(probe && probe.found);
 } catch {}
 
-// Memória & antirepetição
+// Anti-loop: evita listar repetidamente
 const nowTs = Date.now();
 const tooSoon = convMem.lastListAt && (nowTs - convMem.lastListAt < 60 * 1000);
 
-// “Convite recente” da IA (janela de 5 minutos)
+// “Convite recente” da IA (5 min)
 const invitedRecently = convMem.lastInviteAt && (nowTs - convMem.lastInviteAt < 5 * 60 * 1000);
 
-// Intenção final: palavras-chave OU data explícita OU “Sim/Ok” após convite recente
+// Intenção final
 const intentSchedule = baseIntent || hasDateRequest || (affirmative && invitedRecently);
 
+// Se intenção detectada e não for cedo demais, injete a frase canônica
 if (intentSchedule && !tooSoon) {
-  // Se a IA ainda não falou que vai enviar horários, injeta a frase canônica
   if (!/vou te enviar os hor[aá]rios livres/i.test(answer || "")) {
     answer = (answer ? (answer.trim() + "\n\n") : "") +
       "Vou te enviar os horários livres agora, tudo bem?";
   }
-  convMem.lastListAt = nowTs; // marca para não repetir
+  convMem.lastListAt = nowTs;
 }
 
 
     // === SE A IA MENCIONAR QUE VAI ENVIAR HORÁRIOS, ANEXA A LISTA GERADA DO CALENDÁRIO ===
 let finalAnswer = answer;
 try {
-    const shouldList =
+const shouldList =
   /vou te enviar os hor[aá]rios livres/i.test(answer || "") ||
   /ENVIE_HORARIOS/i.test(answer || "") ||
-  /\b(agendar|marcar|remarcar|consulta|hor[áa]rio|dispon[ií]vel|tem\s+vaga|pr[óo]ximos?\s+hor[aá]rios?)\b/i.test(userText || "") ||
+  // paciente com intenção (mesmos sinais do passo 2)
+  /\b(agendar|marcar|remarcar|consulta|horario|disponivel|tem\s+vaga|proximos?\s+horarios?)\b/i.test(userNorm) ||
   (affirmative && invitedRecently) ||
   hasDateRequest;
-
 
   if (shouldList) {
     // ===== 1) Detecta a âncora de data/hora (se a paciente pediu um dia/horário) =====
@@ -936,16 +946,8 @@ if (busy) {
 });
 
   if (alternativas?.length) {
-    msg += "\n\nPosso te oferecer estes horários:\n" +
-      alternativas.map((s,i)=> `${i+1}) ${s.dayLabel} ${s.label}`).join("\n");
-    // guarda na memória para permitir "opção N"
-    convMem.lastSlots = alternativas;
-    convMem.updatedAt = Date.now();
-  } else {
-    msg += "\n\nNos próximos dias não há janelas livres. Posso procurar mais adiante.";
-  }
-  await sendWhatsAppText({ to: from, text: msg });
-  return; // não cria evento, sai daqui
+  convMem.lastSlots = alternativas;
+  convMem.updatedAt = Date.now();
 }
 
 await createCalendarEvent({
