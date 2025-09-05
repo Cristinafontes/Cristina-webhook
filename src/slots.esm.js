@@ -227,3 +227,12 @@ export function formatSlotsForPatient(groups){
   lines.push("Escolha a opção que desejar!");
   return lines.join("\n");
 }
+export function rankSlotsByProximity(items, targetISO) {
+  if (!targetISO || !Array.isArray(items)) return items || [];
+  const t = new Date(targetISO).getTime();
+  return [...items].sort((a, b) => {
+    const da = Math.abs(new Date(a.startISO).getTime() - t);
+    const db = Math.abs(new Date(b.startISO).getTime() - t);
+    return da - db;
+  });
+}
