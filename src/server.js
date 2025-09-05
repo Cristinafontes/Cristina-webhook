@@ -691,11 +691,6 @@ const userNorm = String(userText || "")
   .normalize("NFD")
   .replace(/\p{Diacritic}/gu, "");
 
-// Se a IA já convidou para agendar, marque "convite recente"
-const convMem = ensureConversation(from);
-if (/\b(gostaria de agendar|vamos agendar|quer agendar|posso te enviar os hor[aá]rios|te envio os hor[aá]rios)\b/i.test(answer || "")) {
-  convMem.lastInviteAt = Date.now();
-}
     // Se a IA convidou para agendar, marca um "convite recente" na memória (para destravar "Sim/Ok")
 const convMem = ensureConversation(from);
 if (/\b(gostaria de agendar|vamos agendar|quer agendar|posso te enviar os hor[aá]rios|te envio os hor[aá]rios)\b/i.test(answer || "")) {
