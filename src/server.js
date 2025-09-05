@@ -732,16 +732,16 @@ if (intentSchedule && !tooSoon) {
 }
 
 
-    // === SE A IA MENCIONAR QUE VAI ENVIAR HORÁRIOS, ANEXA A LISTA GERADA DO CALENDÁRIO ===
+// === SE A IA MENCIONAR QUE VAI ENVIAR HORÁRIOS, ANEXA A LISTA GERADA DO CALENDÁRIO ===
 let finalAnswer = answer;
 try {
-const shouldList =
-  /vou te enviar os hor[aá]rios livres/i.test(answer || "") ||
-  /ENVIE_HORARIOS/i.test(answer || "") ||
-  // paciente com intenção (mesmos sinais do passo 2)
-  /\b(agendar|marcar|remarcar|consulta|horario|disponivel|tem\s+vaga|proximos?\s+horarios?)\b/i.test(userNorm) ||
-  (affirmative && invitedRecently) ||
-  hasDateRequest;
+  const shouldList =
+    /vou te enviar os hor[aá]rios livres/i.test(answer || "") ||
+    /ENVIE_HORARIOS/i.test(answer || "") ||
+    // paciente com intenção (mesmos sinais do passo 2)
+    /\b(agendar|marcar|remarcar|consulta|horario|disponivel|tem\s+vaga|proximos?\s+horarios?)\b/i.test(userNorm) ||
+    (affirmative && invitedRecently) ||
+    hasDateRequest;
 
   if (shouldList) {
     // ===== 1) Detecta a âncora de data/hora (se a paciente pediu um dia/horário) =====
@@ -791,7 +791,7 @@ const shouldList =
       });
     }
 
-    // ===== 3) Ordena por proximidade ao horário desejado (se houver hora ancorada) =====
+    // ===== 3) Ordena por proximidade (se houver alvo) =====
     const rankByProximity = (items, targetISO) => {
       if (!targetISO || !Array.isArray(items)) return items || [];
       const t = new Date(targetISO).getTime();
@@ -803,38 +803,38 @@ const shouldList =
     };
     const flatRanked = rankByProximity(flat, anchor?.exactISO);
 
-
-    // ===== 4) Prepara o CONTEXTO INVISÍVEL para a IA montar o texto =====
+    // ===== 4) Contexto invisível para a IA montar o texto =====
     const hiddenContext = {
       anchorRequestedISO: anchor?.exactISO || null,
-      groups: grouped,          // agrupado por dia (para IA escrever bonito)
-      flat: flatRanked,         // lista linear (para “opção 3” etc.)
+      groups: grouped,
+      flat: flatRanked,
       guidance: {
         locale: "pt-BR",
         allowOptionN: true,
         allowFreeTextDate: true,
-        askMissingFields: true  // nome, idade, telefone, motivo, modalidade
+        askMissingFields: true
       }
     };
 
-    // ===== 5) CHAMA A IA DE NOVO, agora com o contexto invisível =====
-    // OBS: "appendMessage" grava no histórico da conversa para a IA ter memória.
+    // ===== 5) Segunda chamada à IA (só ela fala com o paciente) =====
     appendMessage(from, "assistant", "[[CONTEXT_SLOTS_ATTACHED]]");
-    appendMessage(from, "system", "<DISPONIBILIDADES_JSON>" + JSON.stringify(hiddenContext) + "</DISPONIBILIDADES_JSON>");
-    // Importante: o "system" acima NÃO é enviado ao WhatsApp, só para a IA.
+    appendMessage(
+      from,
+      "system",
+      "<DISPONIBILIDADES_JSON>" + JSON.stringify(hiddenContext) + "</DISPONIBILIDADES_JSON>"
+    );
 
-    // Peça para a IA produzir a mensagem ao paciente usando o contexto
     const followUp = await askCristina({
-  userText:
-    "ATENÇÃO (instrução interna para a secretária): " +
-    "Use as DISPONIBILIDADES_JSON acima para redigir uma mensagem clara ao paciente, " +
-    "SEM mostrar JSON ou tags. Mostre horários próximos ao pedido da paciente (se existir), " +
-    "em pt-BR, com lista enxuta. Permita escolha por 'opção N' ou por 'DD/MM HH:MM'. " +
-    "Se não houver horários nessa data, ofereça o próximo dia com vagas. " +
-    "Depois, colete/valide os campos faltantes (nome completo, idade, telefone com DDD, " +
-    "motivo 1=Medicina da Dor/2=Pré-anestésica, modalidade Presencial/Tele).",
-  userPhone: String(from)
-});
+      userText:
+        "ATENÇÃO (instrução interna para a secretária): " +
+        "Use as DISPONIBILIDADES_JSON acima para redigir uma mensagem clara ao paciente, " +
+        "SEM mostrar JSON ou tags. Mostre horários próximos ao pedido da paciente (se existir), " +
+        "em pt-BR, com lista enxuta. Permita escolha por 'opção N' ou por 'DD/MM HH:MM'. " +
+        "Se não houver horários nessa data, ofereça o próximo dia com vagas. " +
+        "Depois, colete/valide os campos faltantes (nome completo, idade, telefone com DDD, " +
+        "motivo 1=Medicina da Dor/2=Pré-anestésica, modalidade Presencial/Tele).",
+      userPhone: String(from),
+    });
 
     finalAnswer = followUp || "Certo! Pode me dizer o melhor dia/horário?";
   }
@@ -922,29 +922,15 @@ await sendWhatsAppText({
 });
             
             // === CHECA CONFLITO NO CALENDÁRIO ANTES DE CRIAR ===
-const { busy, conflicts } = await isSlotBlockedOrBusy({ startISO, endISO });
+const { busy } = await isSlotBlockedOrBusy({ startISO, endISO });
 if (busy) {
-  let msg = "Esse horário acabou de ficar indisponível.";
-  if (conflicts?.length) {
-    const tz = process.env.TZ || "America/Sao_Paulo";
-    const lines = conflicts.map(c => {
-      const when = new Date(c.start);
-      const lbl = when.toLocaleString("pt-BR", { timeZone: tz });
-      return `• ${lbl} — ${c.summary || "Compromisso"}`;
-    });
-    msg += "\n\nConflitos encontrados:\n" + lines.join("\n");
-  }
-  const alternativas = await listAvailableSlots({
-  fromISO: startISO,
-  days: 3,   // só os próximos 3 dias como alternativa
-  limit: 5
-});
-
-  if (alternativas?.length) {
-  convMem.lastSlots = alternativas;
-  convMem.updatedAt = Date.now();
+  // oferecer alternativas e SAIR
+  // (não chamar createCalendarEvent aqui)
+  // ...
+  return;
 }
 
+// só chega aqui se NÃO estiver ocupado:
 await createCalendarEvent({
   summary,
   description,
