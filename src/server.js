@@ -28,6 +28,7 @@ import {
 dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 8080;
+app.set("trust proxy", true);   // importante p/ Railway/NGINX/Cloudflare
 
 // =====================
 // Security & middleware
@@ -43,8 +44,26 @@ app.use(
 );
 app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
 
-const limiter = rateLimit({ windowMs: 60 * 1000, max: 60 });
+const limiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+
+  // usa um gerador de chave seguro, sem depender de validação rígida do X-Forwarded-For
+  keyGenerator: (req /*, res*/) => {
+    const xf = req.headers["x-forwarded-for"];
+    if (typeof xf === "string" && xf.length) return xf.split(",")[0].trim();
+    if (Array.isArray(xf) && xf.length) return String(xf[0]).trim();
+    return req.ip || req.socket?.remoteAddress || "global";
+  },
+
+  // se sua versão suportar, isso silencia a validação estrita:
+  validate: { xForwardedForHeader: false },   // <- se não existir, pode remover
+  skipFailedRequests: true,                   // (não conta 4xx/5xx)
+});
 app.use(limiter);
+
 
 // =====================================
 // Tolerant body parser (JSON + FORM-URL)
