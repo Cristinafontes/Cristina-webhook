@@ -20,7 +20,9 @@ import {
   listAvailableSlotsByDay,
   findDayOrNextWithSlots,
   formatSlotsForPatient,
+  groupSlotsByDay,
 } from "./slots.esm.js";
+
 
 
 // <<< FIM CALENDÁRIO
@@ -642,24 +644,210 @@ try {
       targetISO = new Date(Date.UTC(yyyy, mm - 1, dd, 0, 0, 0)).toISOString();
     }
   }
+// 2b) Fallback: dia da semana (ex.: "proxima terca", "quarta feira", "amanha", "depois de amanha")
+if (!targetISO) {
+  const tz = process.env.TZ || "America/Sao_Paulo";
+
+  // normaliza acentos e caixa
+  const raw = String(userText || "");
+  const txt = raw
+    .toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, ""); // remove acentos
+
+  // atalhos simples
+  if (/\bamanha\b/.test(txt)) {
+    // hoje em SP
+    const parts = new Intl.DateTimeFormat("pt-BR",{ timeZone: tz, year:"numeric", month:"2-digit", day:"2-digit"}).formatToParts(new Date())
+      .reduce((a,p)=> (a[p.type]=p.value, a), {});
+    const yyyy = Number(parts.year), mm = Number(parts.month), dd = Number(parts.day);
+    targetISO = new Date(Date.UTC(yyyy, mm-1, dd + 1, 0,0,0)).toISOString();
+  } else if (/\bdepois de amanha\b/.test(txt)) {
+    const parts = new Intl.DateTimeFormat("pt-BR",{ timeZone: tz, year:"numeric", month:"2-digit", day:"2-digit"}).formatToParts(new Date())
+      .reduce((a,p)=> (a[p.type]=p.value, a), {});
+    const yyyy = Number(parts.year), mm = Number(parts.month), dd = Number(parts.day);
+    targetISO = new Date(Date.UTC(yyyy, mm-1, dd + 2, 0,0,0)).toISOString();
+  } else {
+    // mapeia nomes de dias (com/sem "-feira")
+    const wantNext = /\b(proxim[ao]|que vem)\b/.test(txt); // "próxima terça", "terça que vem"
+    const wdNames = [
+      { rx: /\bdomingo\b/,                  idx: 0 },
+      { rx: /\bsegunda(?:-feira)?\b/,       idx: 1 },
+      { rx: /\bterca(?:-feira)?\b/,         idx: 2 },
+      { rx: /\bquarta(?:-feira)?\b/,        idx: 3 },
+      { rx: /\bquinta(?:-feira)?\b/,        idx: 4 },
+      { rx: /\bsexta(?:-feira)?\b/,         idx: 5 },
+      { rx: /\bsabado(?:-feira)?\b/,        idx: 6 },
+    ];
+    const wanted = wdNames.find(w => w.rx.test(txt));
+
+    if (wanted) {
+      // dia de hoje em São Paulo
+      const todayName = new Intl.DateTimeFormat("pt-BR",{ timeZone: tz, weekday:"long"}).format(new Date())
+        .toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+      const todayIdx =
+        /domingo/.test(todayName) ? 0 :
+        /segunda/.test(todayName) ? 1 :
+        /terca/.test(todayName)   ? 2 :
+        /quarta/.test(todayName)  ? 3 :
+        /quinta/.test(todayName)  ? 4 :
+        /sexta/.test(todayName)   ? 5 : 6;
+
+      let delta = (wanted.idx - todayIdx + 7) % 7; // próximo desse dia (pode ser hoje)
+      if (wantNext) {
+        // "próxima terça": se for hoje, pula 7 dias; senão, o delta já cai na próxima semana quando apropriado
+        if (delta === 0) delta = 7;
+      }
+
+      const parts = new Intl.DateTimeFormat("pt-BR",{ timeZone: tz, year:"numeric", month:"2-digit", day:"2-digit"}).formatToParts(new Date())
+        .reduce((a,p)=> (a[p.type]=p.value, a), {});
+      const yyyy = Number(parts.year), mm = Number(parts.month), dd = Number(parts.day);
+      targetISO = new Date(Date.UTC(yyyy, mm-1, dd + delta, 0,0,0)).toISOString();
+    }
+  }
+}
 
   // 3) Se identificamos uma data (com ou sem hora), listar o dia ou o próximo com vagas
-  if (targetISO) {
-    const { status, groups } = await findDayOrNextWithSlots({
+    if (targetISO) {
+    const res = await findDayOrNextWithSlots({
       targetISO,
-      searchDays: 60,   // pode ajustar para 14/30/90
-      limitPerDay: 12   // quantos horários por dia mostrar
+      searchDays: 60,
+      limitPerDay: 12
     });
-
+    const { status, groups } = res;
     const text = formatSlotsForPatient(groups);
+
+    // === Monta flat para os dias exibidos, para alimentar a memória
+    // Para cada grupo (dia), buscamos os slots daquele dia (1 dia)
+    const flatAll = [];
+    for (const g of groups) {
+      // g.dateLabel = "dd/mm/aa"
+      const [dd, mm, yy] = g.dateLabel.split("/");
+      const yyyy = Number(yy.length === 2 ? ("20" + yy) : yy);
+      const dayStartUTC = new Date(Date.UTC(yyyy, Number(mm)-1, Number(dd), 0, 0, 0)).toISOString();
+
+      const flatDay = await listAvailableSlots({ fromISO: dayStartUTC, days: 1, limit: 100 });
+      flatAll.push(...flatDay);
+    }
+
+    // Guarda mapeamento data/hora -> startISO
+    const convMem = ensureConversation(from);
+    const map = {};
+    const days = [];
+    const yyNow = new Date().getFullYear().toString().slice(-2);
+    for (const s of flatAll) {
+      const dateKey = (s.label || "").slice(0, 8);
+      const time    = (s.label || "").slice(9, 14);
+      if (dateKey && time) {
+        map[`${dateKey}|${time}`] = s.startISO;
+        if (!days.some(d => d.dateKey === dateKey)) days.push({ dateKey });
+      }
+    }
+    convMem.lastOffer = { map, days, defaultYY: yyNow, updatedAt: Date.now() };
+
     await sendWhatsAppText({ to: from, text });
-    return; // não passa para a IA
+    return;
   }
 } catch (e) {
   console.error("[date-query] erro:", e?.message || e);
 }
 // === FIM DATA FUTURA ===
+// === ATALHO: interpretar resposta de hora baseada na ÚLTIMA LISTA oferecida (sem "opção N")
+try {
+  const convMem = getConversation(from);
+  const offer = convMem?.lastOffer;
+  if (offer?.map && offer?.days?.length) {
+    const txt = String(userText || "");
+    // 1) Capturar hora: "08:00" ou "8h" / "8H"
+    let time = null;
+    const m1 = txt.match(/\b(\d{1,2}):(\d{2})\b/);
+    const m2 = txt.match(/\b(\d{1,2})h\b/i);
+    if (m1) {
+      const hh = m1[1].padStart(2, "0");
+      const mm = m1[2].padStart(2, "0");
+      time = `${hh}:${mm}`;
+    } else if (m2) {
+      const hh = m2[1].padStart(2, "0");
+      time = `${hh}:00`;
+    }
 
+    if (time) {
+      // 2) Capturar data (opcional): "23/09" ou "23/09/25"
+      let dateKey = null;
+      const md = txt.match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/);
+      if (md) {
+        const dd = md[1].padStart(2, "0");
+        const mm = md[2].padStart(2, "0");
+        let yy = md[3] ? md[3] : offer.defaultYY; // usa ano "padrão" se não veio
+        if (yy.length === 4) yy = yy.slice(-2);
+        dateKey = `${dd}/${mm}/${yy}`;
+      } else {
+        // Sem data no texto: se só 1 dia foi ofertado, usar esse dia; se mais, tenta "neste dia"
+        const txtLow = txt.toLowerCase();
+        if (offer.days.length === 1 || /\bneste\s+dia|\bnesse\s+dia|\bno\s+mesmo\s+dia/i.test(txtLow)) {
+          dateKey = offer.days[0].dateKey;
+        }
+      }
+// Se não veio dd/mm e há nome de dia ("terca", "quarta", ...), tente casar com um dos dias ofertados
+if (!dateKey) {
+  const tz = process.env.TZ || "America/Sao_Paulo";
+  const plain = txtLow.normalize("NFD").replace(/[\u0300-\u036f]/g, ""); // sem acento
+
+  const wd = [
+    { rx: /\bdomingo\b/,            idx: 0 },
+    { rx: /\bsegunda(?:-feira)?\b/, idx: 1 },
+    { rx: /\bterca(?:-feira)?\b/,   idx: 2 },
+    { rx: /\bquarta(?:-feira)?\b/,  idx: 3 },
+    { rx: /\bquinta(?:-feira)?\b/,  idx: 4 },
+    { rx: /\bsexta(?:-feira)?\b/,   idx: 5 },
+    { rx: /\bsabado(?:-feira)?\b/,  idx: 6 },
+  ].find(w => w.rx.test(plain));
+
+  if (wd) {
+    // procura entre os dias ofertados um que tenha esse dia-da-semana
+    for (const d of offer.days) {
+      // d.dateKey = "dd/mm/aa"
+      const [dd, mm, yy] = d.dateKey.split("/");
+      const yyyy = Number("20" + yy);
+      // meio-dia UTC evita problemas de fuso/borda
+      const when = new Date(Date.UTC(yyyy, Number(mm)-1, Number(dd), 12, 0, 0));
+      const dowName = new Intl.DateTimeFormat("pt-BR", { timeZone: tz, weekday: "long" })
+        .format(when)
+        .toLowerCase()
+        .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+
+      const idx =
+        /domingo/.test(dowName) ? 0 :
+        /segunda/.test(dowName) ? 1 :
+        /terca/.test(dowName)   ? 2 :
+        /quarta/.test(dowName)  ? 3 :
+        /quinta/.test(dowName)  ? 4 :
+        /sexta/.test(dowName)   ? 5 : 6;
+
+      if (idx === wd.idx) { dateKey = d.dateKey; break; }
+    }
+  }
+}
+
+      if (dateKey) {
+        const chosenISO = offer.map[`${dateKey}|${time}`];
+        if (chosenISO) {
+          // Constrói texto que o fluxo já entende (como fazemos no "opção N")
+          const dt = new Date(chosenISO);
+          const tz = process.env.TZ || "America/Sao_Paulo";
+          const parts = new Intl.DateTimeFormat("pt-BR", {
+            timeZone: tz, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"
+          }).formatToParts(dt).reduce((acc,p)=> (acc[p.type]=p.value, acc), {});
+          const ddmmhhmm = `${parts.day}/${parts.month} ${parts.hour}:${parts.minute}`;
+          userText = `Quero agendar nesse horário: ${ddmmhhmm}`;
+          // (Deixa seguir o fluxo normal — IA/regex de confirmação etc.)
+        }
+      }
+    }
+  }
+} catch (e) {
+  console.error("[time-pick-from-offer] erro:", e?.message || e);
+}
+// === FIM ATALHO DE HORA A PARTIR DA LISTA ===    
     safeLog("INBOUND", req.body);
 
     const trimmed = (userText || "").trim().toLowerCase();
@@ -708,23 +896,47 @@ let finalAnswer = answer;
 try {
   const shouldList = /vou te enviar os hor[aá]rios livres/i.test(answer || "");
   if (shouldList) {
-    // Próximos 7 dias, agrupado por dia, até 12 horários por dia
-    const groups = await listAvailableSlotsByDay({
+    // Pegamos a lista "plana" e também agrupamos para formatar
+    const flat = await listAvailableSlots({
       fromISO: new Date().toISOString(),
       days: 7,
-      limitPerDay: 12
+      limit: 200
     });
+    const groups = groupSlotsByDay(flat);
 
     if (!groups.length) {
       finalAnswer = "No momento não encontrei janelas livres nos próximos dias.";
     } else {
       finalAnswer = formatSlotsForPatient(groups);
     }
-    // Observação: NÃO gravamos lastSlots aqui, pois você pediu sem "opção N".
+
+    // === Guarda mapeamento data/hora -> startISO na memória (para entender "neste dia 08:00")
+    const convMem = ensureConversation(from);
+    const map = {};         // chave: "dd/mm/aa|HH:MM"  -> startISO
+    const days = [];        // [{ dateKey }]
+    const yyNow = new Date().getFullYear().toString().slice(-2);
+
+    for (const s of flat) {
+      // s.label = "dd/mm/aa HH:MM"
+      const dateKey = (s.label || "").slice(0, 8);
+      const time    = (s.label || "").slice(9, 14);
+      if (dateKey && time) {
+        map[`${dateKey}|${time}`] = s.startISO;
+        if (!days.some(d => d.dateKey === dateKey)) days.push({ dateKey });
+      }
+    }
+
+    convMem.lastOffer = {
+      map,               // lookup rápido
+      days,              // lista de datas ofertadas
+      defaultYY: yyNow,  // para completar ano quando o usuário digitar só dd/mm
+      updatedAt: Date.now()
+    };
   }
 } catch (e) {
   console.error("[slots-append] erro:", e?.message || e);
 }
+
 
     
     // ======== DISPARO DE CANCELAMENTO (formato EXATO) ========
