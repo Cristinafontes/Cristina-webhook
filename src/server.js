@@ -708,7 +708,6 @@ try {
 } catch {}
 
 // Memória & antirepetição
-const convMem = ensureConversation(from);
 const nowTs = Date.now();
 const tooSoon = convMem.lastListAt && (nowTs - convMem.lastListAt < 60 * 1000);
 
@@ -940,7 +939,6 @@ if (busy) {
     msg += "\n\nPosso te oferecer estes horários:\n" +
       alternativas.map((s,i)=> `${i+1}) ${s.dayLabel} ${s.label}`).join("\n");
     // guarda na memória para permitir "opção N"
-    const convMem = ensureConversation(from);
     convMem.lastSlots = alternativas;
     convMem.updatedAt = Date.now();
   } else {
