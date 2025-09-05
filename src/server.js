@@ -648,12 +648,18 @@ try {
 
     safeLog("INBOUND", req.body);
 
-    const trimmed = (userText || "").trim().toLowerCase();
-    if (["reset", "reiniciar", "reiniciar conversa", "novo atendimento"].includes(trimmed)) {
-      resetConversation(from);
-      await sendWhatsAppText({ to: from, text: "Conversa reiniciada. Como posso ajudar?" });
-      return;
-    }
+const trimmed = (userText || "").trim().toLowerCase();
+if (["reset", "reiniciar", "reiniciar conversa", "novo atendimento"].includes(trimmed)) {
+  resetConversation(from);
+
+  // reforça a abertura + já marca "convite recente" p/ SIM/OK disparar os horários
+  const mem = ensureConversation(from);
+  mem.lastInviteAt = Date.now();
+
+  // deixa a Cristina falar no envio ÚNICO do final
+  finalAnswer = "Conversa reiniciada.\n\nOlá! Eu sou a Secretária Cristina, da Dra. Jenifer Bottino (Medicina da Dor e Anestesiologia). Você deseja agendar uma consulta?";
+  // **não** dar return aqui — o envio acontece no fim do handler
+}
 
     // Montagem de contexto para a IA
     const conv = getConversation(from);
@@ -688,6 +694,7 @@ try {
 
     // Resposta da secretária (IA)
     let answer = await askCristina({ userText: composed, userPhone: String(from) });
+    let finalAnswer = answer;
     // Texto do paciente normalizado (sem acentos/maiusc.)
 const userNorm = String(userText || "")
   .toLowerCase()
@@ -737,22 +744,26 @@ if (intentSchedule && !tooSoon) {
 }
 
 
-// === SE A IA MENCIONAR QUE VAI ENVIAR HORÁRIOS (ou shouldList), roda o 2-passos ===
-let finalAnswer = answer;
-try {
-  const shouldList =
-    /vou te enviar os hor[aá]rios livres/i.test(answer || "") ||
-    /ENVIE_HORARIOS/i.test(answer || "") ||
-    /\b(agendar|marcar|remarcar|consulta|horario|disponivel|tem\s+vaga|proximos?\s+horarios?)\b/i.test(userNorm) ||
-    (affirmative && invitedRecently) ||
-    hasDateRequest;
+// === BLOCO 2-PASSOS (ISOLADO) — BUSCA SLOTS E DELEGA TEXTO À IA ===
+await (async () => {
+  let _final = answer; // acumulador local; no fim joga em finalAnswer
+  try {
+    const shouldList =
+      /vou te enviar os hor[aá]rios livres/i.test(answer || "") ||
+      /ENVIE_HORARIOS/i.test(answer || "") ||
+      /\b(agendar|marcar|remarcar|consulta|horario|disponivel|tem\s+vaga|proximos?\s+horarios?)\b/i.test(userNorm) ||
+      (affirmative && invitedRecently) ||
+      hasDateRequest;
 
-  console.log("[TWO-PASS] shouldList =", shouldList);
+    console.log("[TWO-PASS] shouldList =", shouldList);
+    if (!shouldList) {
+      finalAnswer = _final;
+      return;
+    }
 
-  if (shouldList) {
     console.log("[TWO-PASS] entering...");
 
-    // (1) âncora de data/hora, se o paciente tiver pedido algo específico
+    // (1) âncora de data/hora
     const findAnchorISO = (txt) => {
       try {
         const { found, startISO } = parseCandidateDateTime(
@@ -773,33 +784,18 @@ try {
 
     const anchor = findAnchorISO(answer) || findAnchorISO(userText);
 
-    // (2) busca de horários no Calendar
+    // (2) busca slots
     let grouped, flat;
     if (anchor?.dayISO) {
-      grouped = await listAvailableSlotsByDay({
-        fromISO: anchor.dayISO,
-        days: 1,
-        limitPerDay: 24
-      });
-      flat = await listAvailableSlots({
-        fromISO: anchor.dayISO,
-        days: 1,
-        limit: 30
-      });
+      grouped = await listAvailableSlotsByDay({ fromISO: anchor.dayISO, days: 1, limitPerDay: 24 });
+      flat    = await listAvailableSlots({     fromISO: anchor.dayISO, days: 1, limit: 30 });
     } else {
-      grouped = await listAvailableSlotsByDay({
-        fromISO: new Date().toISOString(),
-        days: 5,
-        limitPerDay: 8
-      });
-      flat = await listAvailableSlots({
-        fromISO: new Date().toISOString(),
-        days: 5,
-        limit: 20
-      });
+      const fromISO = new Date().toISOString();
+      grouped = await listAvailableSlotsByDay({ fromISO, days: 5, limitPerDay: 8 });
+      flat    = await listAvailableSlots({     fromISO, days: 5, limit: 20 });
     }
 
-    // (3) ranquear por proximidade ao horário pedido (se houver)
+    // (3) rank por proximidade
     const rankByProximity = (items, targetISO) => {
       if (!targetISO || !Array.isArray(items)) return items || [];
       const t = new Date(targetISO).getTime();
@@ -811,27 +807,20 @@ try {
     };
     const flatRanked = rankByProximity(flat, anchor?.exactISO);
 
-    // (4) contexto invisível para a IA montar a mensagem
+    // (4) contexto invisível
     const hiddenContext = {
       anchorRequestedISO: anchor?.exactISO || null,
       groups: grouped,
       flat: flatRanked,
-      guidance: {
-        locale: "pt-BR",
-        allowOptionN: true,
-        allowFreeTextDate: true,
-        askMissingFields: true
-      }
+      guidance: { locale: "pt-BR", allowOptionN: true, allowFreeTextDate: true, askMissingFields: true }
     };
 
     appendMessage(from, "assistant", "[[CONTEXT_SLOTS_ATTACHED]]");
-    appendMessage(
-      from,
-      "system",
+    appendMessage(from, "system",
       "<DISPONIBILIDADES_JSON>" + JSON.stringify(hiddenContext) + "</DISPONIBILIDADES_JSON>"
     );
 
-    // (5) segunda chamada à IA — ela monta o texto final para o paciente
+    // (5) segunda chamada à IA
     const followUp = await askCristina({
       userText:
         "ATENÇÃO (instrução interna para a secretária): " +
@@ -845,13 +834,13 @@ try {
     });
 
     console.log("[TWO-PASS] followUp preview =", (followUp || "").slice(0, 120));
-    finalAnswer = followUp || "Certo! Pode me dizer o melhor dia/horário?";
+    _final = followUp || "Certo! Pode me dizer o melhor dia/horário?";
+  } catch (e) {
+    console.error("[slots-two-pass] erro:", e?.message || e);
   }
-} catch (e) {
-  console.error("[slots-two-pass] erro:", e?.message || e);
-}
-
-    console.log("[TWO-PASS] followUp preview =", (followUp || "").slice(0,120));
+  // aplica no final
+  finalAnswer = _final;
+})();
 
     // ======== DISPARO DE CANCELAMENTO (formato EXATO) ========
     // "Pronto! Sua consulta com a Dra. Jenifer está cancelada para o dia dd/mm/aa HH:MM"
