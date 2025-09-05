@@ -666,13 +666,35 @@ try {
 
     // Resposta da secretária (IA)
     const answer = await askCristina({ userText: composed, userPhone: String(from) });
+// ===== Disparo por intenção do PACIENTE (sem depender da frase da IA) =====
+const intentSchedule =
+  /\b(agendar|marcar|remarcar|consulta|hor[áa]rio|dispon[ií]vel|tem\s+vaga|pr[óo]ximos?\s+hor[aá]rios?)\b/i
+    .test(userText || "");
+
+// Anti-loop: evita listar horários repetidamente a cada mensagem
+const convMem = ensureConversation(from);
+const nowTs = Date.now();
+const tooSoon = convMem.lastListAt && (nowTs - convMem.lastListAt < 60 * 1000);
+if (intentSchedule && !tooSoon) {
+  // Se a IA ainda não falou que vai enviar horários, injeta a frase canônica
+  if (!/vou te enviar os hor[aá]rios livres/i.test(answer || "")) {
+    // Acrescenta a frase de gatilho para reutilizar o mesmo fluxo
+    answer = (answer ? (answer.trim() + "\n\n") : "") + "Vou te enviar os horários livres agora, tudo bem?";
+  }
+  // marca o horário em que listamos para não repetir
+  convMem.lastListAt = nowTs;
+}
 
     // === SE A IA MENCIONAR QUE VAI ENVIAR HORÁRIOS, ANEXA A LISTA GERADA DO CALENDÁRIO ===
 let finalAnswer = answer;
 try {
-  const shouldList =
+    const shouldList =
     /vou te enviar os hor[aá]rios livres/i.test(answer || "") ||
-    /ENVIE_HORARIOS/i.test(answer || "");
+    /ENVIE_HORARIOS/i.test(answer || "") ||
+    // dispara também quando o PACIENTE pede horários/agenda
+    /\b(agendar|marcar|remarcar|consulta|hor[áa]rio|dispon[ií]vel|tem\s+vaga|pr[óo]ximos?\s+hor[aá]rios?)\b/i
+      .test(userText || "");
+
 
   if (shouldList) {
     // ===== 1) Detecta a âncora de data/hora (se a paciente pediu um dia/horário) =====
