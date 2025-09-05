@@ -685,34 +685,58 @@ try {
 
     // Resposta da secretária (IA)
     let answer = await askCristina({ userText: composed, userPhone: String(from) });
+    // Se a IA convidou para agendar, marca um "convite recente" na memória (para destravar "Sim/Ok")
+const convMem = ensureConversation(from);
+if (/\b(gostaria de agendar|vamos agendar|quer agendar|posso te enviar os hor[aá]rios|te envio os hor[aá]rios)\b/i.test(answer || "")) {
+  convMem.lastInviteAt = Date.now();
+}
+
 // ===== Disparo por intenção do PACIENTE (sem depender da frase da IA) =====
-const intentSchedule =
+const baseIntent =
   /\b(agendar|marcar|remarcar|consulta|hor[áa]rio|dispon[ií]vel|tem\s+vaga|pr[óo]ximos?\s+hor[aá]rios?)\b/i
     .test(userText || "");
 
-// Anti-loop: evita listar horários repetidamente a cada mensagem
+// Afirmações curtas (Sim/Ok/Vamos/Quero), consideradas intenção SE houve convite recente da IA
+const affirmative =
+  /\b(sim|ok|vamos|quero|pode ser|isso|certo|perfeito|t[áa]\s*bom)\b/i.test(userText || "");
+
+// Detecta se o paciente já digitou uma data/horário (ex.: "23/09 09:00", "dia 25/10")
+let hasDateRequest = false;
+try {
+  const probe = parseCandidateDateTime(String(userText || ""), process.env.TZ || "America/Sao_Paulo");
+  hasDateRequest = !!(probe && probe.found);
+} catch {}
+
+// Memória & antirepetição
 const convMem = ensureConversation(from);
 const nowTs = Date.now();
 const tooSoon = convMem.lastListAt && (nowTs - convMem.lastListAt < 60 * 1000);
+
+// “Convite recente” da IA (janela de 5 minutos)
+const invitedRecently = convMem.lastInviteAt && (nowTs - convMem.lastInviteAt < 5 * 60 * 1000);
+
+// Intenção final: palavras-chave OU data explícita OU “Sim/Ok” após convite recente
+const intentSchedule = baseIntent || hasDateRequest || (affirmative && invitedRecently);
+
 if (intentSchedule && !tooSoon) {
   // Se a IA ainda não falou que vai enviar horários, injeta a frase canônica
   if (!/vou te enviar os hor[aá]rios livres/i.test(answer || "")) {
-    // Acrescenta a frase de gatilho para reutilizar o mesmo fluxo
-    answer = (answer ? (answer.trim() + "\n\n") : "") + "Vou te enviar os horários livres agora, tudo bem?";
+    answer = (answer ? (answer.trim() + "\n\n") : "") +
+      "Vou te enviar os horários livres agora, tudo bem?";
   }
-  // marca o horário em que listamos para não repetir
-  convMem.lastListAt = nowTs;
+  convMem.lastListAt = nowTs; // marca para não repetir
 }
+
 
     // === SE A IA MENCIONAR QUE VAI ENVIAR HORÁRIOS, ANEXA A LISTA GERADA DO CALENDÁRIO ===
 let finalAnswer = answer;
 try {
     const shouldList =
-    /vou te enviar os hor[aá]rios livres/i.test(answer || "") ||
-    /ENVIE_HORARIOS/i.test(answer || "") ||
-    // dispara também quando o PACIENTE pede horários/agenda
-    /\b(agendar|marcar|remarcar|consulta|hor[áa]rio|dispon[ií]vel|tem\s+vaga|pr[óo]ximos?\s+hor[aá]rios?)\b/i
-      .test(userText || "");
+  /vou te enviar os hor[aá]rios livres/i.test(answer || "") ||
+  /ENVIE_HORARIOS/i.test(answer || "") ||
+  /\b(agendar|marcar|remarcar|consulta|hor[áa]rio|dispon[ií]vel|tem\s+vaga|pr[óo]ximos?\s+hor[aá]rios?)\b/i.test(userText || "") ||
+  (affirmative && invitedRecently) ||
+  hasDateRequest;
 
 
   if (shouldList) {
