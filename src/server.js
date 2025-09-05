@@ -737,28 +737,22 @@ if (intentSchedule && !tooSoon) {
 }
 
 
-// === SE A IA MENCIONAR QUE VAI ENVIAR HORÁRIOS, ANEXA A LISTA GERADA DO CALENDÁRIO ===
+// === SE A IA MENCIONAR QUE VAI ENVIAR HORÁRIOS (ou shouldList), roda o 2-passos ===
 let finalAnswer = answer;
 try {
   const shouldList =
     /vou te enviar os hor[aá]rios livres/i.test(answer || "") ||
     /ENVIE_HORARIOS/i.test(answer || "") ||
-    // paciente com intenção (mesmos sinais do passo 2)
     /\b(agendar|marcar|remarcar|consulta|horario|disponivel|tem\s+vaga|proximos?\s+horarios?)\b/i.test(userNorm) ||
     (affirmative && invitedRecently) ||
     hasDateRequest;
 
-  console.log("[INTENT FLAGS]", {
-  baseIntent,
-  affirmative,
-  hasDateRequest,
-  invitedRecently,
-  shouldList
-});
+  console.log("[TWO-PASS] shouldList =", shouldList);
 
-  
   if (shouldList) {
-    // ===== 1) Detecta a âncora de data/hora (se a paciente pediu um dia/horário) =====
+    console.log("[TWO-PASS] entering...");
+
+    // (1) âncora de data/hora, se o paciente tiver pedido algo específico
     const findAnchorISO = (txt) => {
       try {
         const { found, startISO } = parseCandidateDateTime(
@@ -778,8 +772,8 @@ try {
     };
 
     const anchor = findAnchorISO(answer) || findAnchorISO(userText);
-    
-    // ===== 2) Busca dos horários =====
+
+    // (2) busca de horários no Calendar
     let grouped, flat;
     if (anchor?.dayISO) {
       grouped = await listAvailableSlotsByDay({
@@ -805,7 +799,7 @@ try {
       });
     }
 
-    // ===== 3) Ordena por proximidade (se houver alvo) =====
+    // (3) ranquear por proximidade ao horário pedido (se houver)
     const rankByProximity = (items, targetISO) => {
       if (!targetISO || !Array.isArray(items)) return items || [];
       const t = new Date(targetISO).getTime();
@@ -817,7 +811,7 @@ try {
     };
     const flatRanked = rankByProximity(flat, anchor?.exactISO);
 
-    // ===== 4) Contexto invisível para a IA montar o texto =====
+    // (4) contexto invisível para a IA montar a mensagem
     const hiddenContext = {
       anchorRequestedISO: anchor?.exactISO || null,
       groups: grouped,
@@ -830,7 +824,6 @@ try {
       }
     };
 
-    // ===== 5) Segunda chamada à IA (só ela fala com o paciente) =====
     appendMessage(from, "assistant", "[[CONTEXT_SLOTS_ATTACHED]]");
     appendMessage(
       from,
@@ -838,6 +831,7 @@ try {
       "<DISPONIBILIDADES_JSON>" + JSON.stringify(hiddenContext) + "</DISPONIBILIDADES_JSON>"
     );
 
+    // (5) segunda chamada à IA — ela monta o texto final para o paciente
     const followUp = await askCristina({
       userText:
         "ATENÇÃO (instrução interna para a secretária): " +
@@ -850,6 +844,7 @@ try {
       userPhone: String(from),
     });
 
+    console.log("[TWO-PASS] followUp preview =", (followUp || "").slice(0, 120));
     finalAnswer = followUp || "Certo! Pode me dizer o melhor dia/horário?";
   }
 } catch (e) {
