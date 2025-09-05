@@ -732,7 +732,8 @@ try {
         return da - db;
       });
     };
-    const flatRanked = rankSlotsByProximity(flat, anchor?.exactISO);
+    const flatRanked = rankByProximity(flat, anchor?.exactISO);
+
 
     // ===== 4) Prepara o CONTEXTO INVISÍVEL para a IA montar o texto =====
     const hiddenContext = {
@@ -754,86 +755,23 @@ try {
     // Importante: o "system" acima NÃO é enviado ao WhatsApp, só para a IA.
 
     // Peça para a IA produzir a mensagem ao paciente usando o contexto
-    const followUp = await askAssistant({
-      from,
-      instruction:
-        "Use as DISPONIBILIDADES_JSON acima para redigir uma mensagem clara ao paciente, SEM mostrar JSON ou tags. " +
-        "Mostre horários próximos ao pedido da paciente (se existir), em português (pt-BR), com lista enxuta. " +
-        "Permita escolha por 'opção N' ou por 'DD/MM HH:MM'. Se não houver horários nessa data, ofereça o próximo dia com vagas. " +
-        "Em seguida, colete/valide os campos faltantes (nome completo, idade, telefone com DDD, motivo 1=Medicina da Dor/2=Pré-anestésica, modalidade Presencial/Tele)."
-    });
+    const followUp = await askCristina({
+  userText:
+    "ATENÇÃO (instrução interna para a secretária): " +
+    "Use as DISPONIBILIDADES_JSON acima para redigir uma mensagem clara ao paciente, " +
+    "SEM mostrar JSON ou tags. Mostre horários próximos ao pedido da paciente (se existir), " +
+    "em pt-BR, com lista enxuta. Permita escolha por 'opção N' ou por 'DD/MM HH:MM'. " +
+    "Se não houver horários nessa data, ofereça o próximo dia com vagas. " +
+    "Depois, colete/valide os campos faltantes (nome completo, idade, telefone com DDD, " +
+    "motivo 1=Medicina da Dor/2=Pré-anestésica, modalidade Presencial/Tele).",
+  userPhone: String(from)
+});
 
     finalAnswer = followUp || "Certo! Pode me dizer o melhor dia/horário?";
   }
 } catch (e) {
   console.error("[slots-two-pass] erro:", e?.message || e);
 }
-      return null;
-    };
-
-    let anchorISO = findAnchorISO(answer) || findAnchorISO(userText);
-
-    // ===== 2) Buscar slots ====
-    // Regra:
-    // - Se o paciente pediu um DIA específico -> traz só aquele dia (days=1).
-    // - Se não pediu um dia -> próximos 5 dias corridos.
-    let pretty, flat;
-
-    if (anchorISO) {
-      // a) AGRUPADO por dia (apenas esse dia)
-      const grouped = await listAvailableSlotsByDay({
-        fromISO: anchorISO,
-        days: 1,
-        limitPerDay: 12, // até 12 horários nesse dia
-      });
-      pretty = formatSlotsForPatient(grouped);
-
-      // b) LISTA "PLANA" numerada (para permitir 'opção 3')
-      flat = await listAvailableSlots({
-        fromISO: anchorISO,
-        days: 1,
-        limit: 20
-      });
-    } else {
-      // Sem âncora -> janela padrão a partir de agora
-      const grouped = await listAvailableSlotsByDay({
-        fromISO: new Date().toISOString(),
-        days: 5,
-        limitPerDay: 6,
-      });
-      pretty = formatSlotsForPatient(grouped);
-
-      flat = await listAvailableSlots({
-        fromISO: new Date().toISOString(),
-        days: 5,
-        limit: 10
-      });
-    }
-
-    // ===== 3) Montagem da resposta final =====
-    if (!flat || !flat.length) {
-      finalAnswer = (answer || "") +
-        "\n\nNo momento não encontrei horários livres para essa data/período. Pode me indicar outro dia?";
-    } else {
-      const numerada = flat.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`).join("\n");
-      finalAnswer = [
-        (answer || "").trim(),
-        "",
-        pretty,
-        "Se preferir, pode responder com a opção (ex.: 'opção 3') ou digitar a data e hora.",
-        numerada
-      ].filter(Boolean).join("\n");
-
-      // Guarda os slots para o atalho "opção N"
-      const convMem = ensureConversation(from);
-      convMem.lastSlots = flat;
-      convMem.updatedAt = Date.now();
-    }
-  }
-} catch (e) {
-  console.error("[slots-anchored-append] erro:", e?.message || e);
-}
-
     
     // ======== DISPARO DE CANCELAMENTO (formato EXATO) ========
     // "Pronto! Sua consulta com a Dra. Jenifer está cancelada para o dia dd/mm/aa HH:MM"
