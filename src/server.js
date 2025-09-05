@@ -612,13 +612,16 @@ async function handleInbound(req, res) {
       userText = p?.payload?.text || "";
     } else if (msgType === "button_reply" || msgType === "list_reply") {
       userText = p?.payload?.title || p?.payload?.postbackText || "";
-    } else {
-      await sendWhatsAppText({
-        to: from,
-        text: "Por ora, consigo ler apenas mensagens de texto. Pode tentar novamente?",
-      });
-      return;
-    }
+   } else {
+  // Não envia aqui; consolida para o envio único no fim
+  appendMessage(from, "user", "[mensagem não textual]");
+  const notTextMsg = "Por ora, consigo ler apenas mensagens de texto. Pode tentar novamente?";
+  appendMessage(from, "assistant", notTextMsg);
+  console.log("[OUTBOUND to user]", { to: from, preview: notTextMsg });
+  await sendWhatsAppText({ to: from, text: notTextMsg });
+  return; // <- mantemos o return porque não há texto para processar slots
+}
+
 // === ATALHO: se o paciente responder "opção 3" (ou só "3"), injeta a data/hora do slot escolhido ===
 try {
   const convMem = getConversation(from);
@@ -775,7 +778,7 @@ try {
     };
 
     const anchor = findAnchorISO(answer) || findAnchorISO(userText);
-
+    
     // ===== 2) Busca dos horários =====
     let grouped, flat;
     if (anchor?.dayISO) {
@@ -852,7 +855,9 @@ try {
 } catch (e) {
   console.error("[slots-two-pass] erro:", e?.message || e);
 }
-    
+
+    console.log("[TWO-PASS] followUp preview =", (followUp || "").slice(0,120));
+
     // ======== DISPARO DE CANCELAMENTO (formato EXATO) ========
     // "Pronto! Sua consulta com a Dra. Jenifer está cancelada para o dia dd/mm/aa HH:MM"
     try {
@@ -877,9 +882,10 @@ try {
     const confirmRegex =
       /pronto!\s*sua\s+consulta\s+com\s+a\s+dra\.?\s+jenifer\s+est[aá]\s+agendada\s+para\s+o\s+dia\s+(\d{1,2})\/(\d{1,2})\/\d{2}\s*,?\s*hor[áa]rio\s+(\d{1,2}:\d{2}|\d{1,2}h)/i;
 
-    if (answer) {
-      const m = answer.match(confirmRegex);
-      if (m) {
+  
+    const confirmSource = (finalAnswer || answer || "");
+const m = confirmSource.match(confirmRegex);
+if (m) {
         try {
           const dd = m[1].padStart(2, "0");
           const mm = m[2].padStart(2, "0");
@@ -926,21 +932,14 @@ const location =
     ? "Telemedicina (link será enviado)"
     : (process.env.CLINIC_ADDRESS || "Clínica");
 
-            // 1) Envia aviso imediato ao paciente
-await sendWhatsAppText({
-  to: from,
-  text: "Perfeito, vou verificar a disponibilidade e te confirmo já."
-});
             
             // === CHECA CONFLITO NO CALENDÁRIO ANTES DE CRIAR ===
 const { busy } = await isSlotBlockedOrBusy({ startISO, endISO });
 if (busy) {
-  // oferecer alternativas e SAIR
-  // (não chamar createCalendarEvent aqui)
-  // ...
+  // Delega à IA no próximo turno: não crie evento nem envie texto aqui.
+  console.log("[calendar] horário ocupado; não criar evento");
   return;
 }
-
 // só chega aqui se NÃO estiver ocupado:
 await createCalendarEvent({
   summary,
