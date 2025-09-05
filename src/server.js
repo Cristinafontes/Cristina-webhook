@@ -684,7 +684,7 @@ try {
     }
 
     // Resposta da secretária (IA)
-    const answer = await askCristina({ userText: composed, userPhone: String(from) });
+    let answer = await askCristina({ userText: composed, userPhone: String(from) });
 // ===== Disparo por intenção do PACIENTE (sem depender da frase da IA) =====
 const intentSchedule =
   /\b(agendar|marcar|remarcar|consulta|hor[áa]rio|dispon[ií]vel|tem\s+vaga|pr[óo]ximos?\s+hor[aá]rios?)\b/i
@@ -961,7 +961,8 @@ await createCalendarEvent({
   finalAnswer = finalAnswer.trim();
 
   appendMessage(from, "assistant", finalAnswer);
-  await sendWhatsAppText({ to: from, text: finalAnswer });
+ console.log("[OUTBOUND to user]", { to: from, preview: (finalAnswer || "").slice(0, 140) });
+     await sendWhatsAppText({ to: from, text: finalAnswer });
 }
   } catch (err) {
     console.error("ERR inbound:", err?.response?.data || err);
