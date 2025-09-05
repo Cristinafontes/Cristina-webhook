@@ -111,6 +111,32 @@ function getConversation(phone) {
   }
   return c;
 }
+// === NLU helpers (IA em JSON) ===
+function pickJSON(s){
+  const t = String(s || "");
+  const i = t.indexOf("{"); const j = t.lastIndexOf("}");
+  return (i >= 0 && j > i) ? t.slice(i, j + 1) : null;
+}
+function safeParseJSON(s){
+  try { return JSON.parse(s); } catch { return null; }
+}
+function toISODateUTC(y,m,d){
+  return new Date(Date.UTC(y, m-1, d, 0, 0, 0)).toISOString();
+}
+function resolveWeekdayToISO({ weekdayIdx, wantNext=false, tz="America/Sao_Paulo" }){
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat("pt-BR", { timeZone: tz, year:"numeric", month:"2-digit", day:"2-digit", weekday:"long" })
+    .formatToParts(now).reduce((a,p)=>(a[p.type]=p.value,a),{});
+  const yyyy = Number(parts.year), mm = Number(parts.month), dd = Number(parts.day);
+  const todayName = new Intl.DateTimeFormat("pt-BR",{ timeZone: tz, weekday:"long"}).format(now)
+    .toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+  const todayIdx =
+    /domingo/.test(todayName)?0:/segunda/.test(todayName)?1:/terca/.test(todayName)?2:
+    /quarta/.test(todayName)?3:/quinta/.test(todayName)?4:/sexta/.test(todayName)?5:6;
+  let delta = (weekdayIdx - todayIdx + 7) % 7;
+  if (wantNext && delta === 0) delta = 7;
+  return toISODateUTC(yyyy, mm, dd + delta);
+}
 
 function ensureConversation(phone) {
   const existing = getConversation(phone);
@@ -624,7 +650,153 @@ try {
   }
 } catch (e) {
   console.error("[option-pick] erro:", e?.message || e);
-}// === INTERPRETAR PEDIDO DE DATA FUTURA & RESPONDER COM LAYOUT NOVO (sem "opção N") ===
+}
+    // === AI NLU MIDDLEWARE: tenta interpretar e devolver JSON de intenção ===
+try {
+  const conv = getConversation(from) || {};
+  const offer = conv.lastOffer || { days: [], map: {}, defaultYY: new Date().getFullYear().toString().slice(-2) };
+  const tz = process.env.TZ || "America/Sao_Paulo";
+
+  const nluPrompt =
+`[[MODO_NLU_JSON]]
+Você extrairá a intenção do usuário e responderá APENAS um JSON válido, sem texto extra.
+Schema:
+{
+  "action": "list_by_date"|"list_near"|"book"|"cancel"|"unknown",
+  "date":  "YYYY-MM-DD" | null,     // se usuário disse "23/09" ou "próxima terça", normalize p/ data absoluta
+  "time":  "HH:MM" | null,          // 24h
+  "weekday": "domingo|segunda|terca|quarta|quinta|sexta|sabado" | null,
+  "relative": "amanha|depois_amanha|proxima_semana|esta_semana" | null,
+  "modality": "presencial"|"telemedicina"|null,
+  "notes": string,
+  "confidence": number               // 0..1
+}
+Regras:
+- Se houver dia da semana ("próxima terça", "quarta-feira"), preencha "weekday" e "relative"; e se possível já dê "date".
+- Se houver apenas hora ("08:00", "8h") E existirem dias ofertados, mantenha time e deixe date=null.
+- Se usuário citar explicitamente "23/09" (ou 23/09/25), preencha "date".
+- Se pedir para ver horários, use action="list_by_date" (com date) ou "list_near" (sem date).
+- Se pedir para marcar em um horário específico, use action="book".
+- Nunca invente. Prefira null e confidence menor se ambíguo.
+
+Contexto:
+- timezone: ${tz}
+- hoje (YYYY-MM-DD): ${new Date().toISOString().slice(0,10)}
+- dias_ofertados_anteriores: ${offer?.days?.map(d=>d.dateKey).join(", ") || "nenhum"}
+
+TEXTO_USUARIO:
+"""${userText}"""`;
+
+  // usamos a mesma função askCristina, forçando o modo NLU pelo texto
+  const nluRaw = await askCristina({ userText: nluPrompt, userPhone: String(from) });
+  const jsonStr = pickJSON(nluRaw);
+  const nlu = safeParseJSON(jsonStr);
+
+  if (nlu && nlu.confidence >= 0.55 && nlu.action && nlu.action !== "unknown") {
+    // Normalizações leves no servidor (determinísticas)
+    let targetISO = null;
+
+    // 1) Se veio date (YYYY-MM-DD), usa direto
+    if (nlu.date) {
+      const [y,m,d] = nlu.date.split("-").map(Number);
+      if (y && m && d) targetISO = toISODateUTC(y,m,d);
+    }
+
+    // 2) Se não veio date e veio relative/weekday, resolve aqui (determinístico)
+    if (!targetISO && (nlu.weekday || nlu.relative)) {
+      const wdIdx =
+        nlu.weekday==="domingo"?0:nlu.weekday==="segunda"?1:nlu.weekday==="terca"?2:
+        nlu.weekday==="quarta"?3:nlu.weekday==="quinta"?4:nlu.weekday==="sexta"?5:
+        nlu.weekday==="sabado"?6:null;
+      const wantNext = /proxima/.test(String(nlu.relative||""));
+      if (wdIdx !== null) targetISO = resolveWeekdayToISO({ weekdayIdx: wdIdx, wantNext, tz });
+      if (!targetISO && nlu.relative==="amanha") {
+        const now = new Date();
+        const parts = new Intl.DateTimeFormat("pt-BR",{timeZone:tz,year:"numeric",month:"2-digit",day:"2-digit"})
+          .formatToParts(now).reduce((a,p)=>(a[p.type]=p.value,a),{});
+        targetISO = toISODateUTC(Number(parts.year), Number(parts.month), Number(parts.day) + 1);
+      }
+      if (!targetISO && nlu.relative==="depois_amanha") {
+        const now = new Date();
+        const parts = new Intl.DateTimeFormat("pt-BR",{timeZone:tz,year:"numeric",month:"2-digit",day:"2-digit"})
+          .formatToParts(now).reduce((a,p)=>(a[p.type]=p.value,a),{});
+        targetISO = toISODateUTC(Number(parts.year), Number(parts.month), Number(parts.day) + 2);
+      }
+    }
+
+    // 3) Decide a ação
+    if (nlu.action === "list_by_date" && targetISO) {
+      const { groups } = await findDayOrNextWithSlots({ targetISO, searchDays: 60, limitPerDay: 12 });
+      const text = formatSlotsForPatient(groups);
+
+      // atualiza memória lastOffer (dias/horas exibidos)
+      const flatAll = [];
+      for (const g of groups) {
+        const [dd,mm,yy] = g.dateLabel.split("/");
+        const yyyy = yy.length===2 ? Number("20"+yy) : Number(yy);
+        const startUTC = toISODateUTC(yyyy, Number(mm), Number(dd));
+        const flatDay = await listAvailableSlots({ fromISO: startUTC, days: 1, limit: 100 });
+        flatAll.push(...flatDay);
+      }
+      const map = {}, days = [];
+      const yyNow = new Date().getFullYear().toString().slice(-2);
+      for (const s of flatAll) {
+        const dateKey = (s.label || "").slice(0,8);
+        const t = (s.label || "").slice(9,14);
+        if (dateKey && t) {
+          map[`${dateKey}|${t}`] = s.startISO;
+          if (!days.some(d => d.dateKey === dateKey)) days.push({ dateKey });
+        }
+      }
+      const convMem = ensureConversation(from);
+      convMem.lastOffer = { map, days, defaultYY: yyNow, updatedAt: Date.now() };
+
+      await sendWhatsAppText({ to: from, text });
+      return;
+    }
+
+    if (nlu.action === "list_near") {
+      const groups = await listAvailableSlotsByDay({ fromISO: new Date().toISOString(), days: 7, limitPerDay: 12 });
+      const text = formatSlotsForPatient(groups);
+
+      // memória
+      const flat = await listAvailableSlots({ fromISO: new Date().toISOString(), days: 7, limit: 200 });
+      const map = {}, days = [];
+      const yyNow = new Date().getFullYear().toString().slice(-2);
+      for (const s of flat) {
+        const dateKey = (s.label || "").slice(0,8);
+        const t = (s.label || "").slice(9,14);
+        if (dateKey && t) { map[`${dateKey}|${t}`]=s.startISO; if(!days.some(d=>d.dateKey===dateKey)) days.push({dateKey}); }
+      }
+      const convMem = ensureConversation(from);
+      convMem.lastOffer = { map, days, defaultYY: yyNow, updatedAt: Date.now() };
+
+      await sendWhatsAppText({ to: from, text });
+      return;
+    }
+
+    if (nlu.action === "book") {
+      // Se vier date+time, converte para o formato que seu fluxo já entende
+      if (targetISO && nlu.time) {
+        const dt = new Date(`${targetISO.slice(0,10)}T${nlu.time}:00.000Z`);
+        const parts = new Intl.DateTimeFormat("pt-BR",{
+          timeZone: tz, day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit"
+        }).formatToParts(dt).reduce((a,p)=>(a[p.type]=p.value,a),{});
+        const ddmmhhmm = `${parts.day}/${parts.month} ${parts.hour}:${parts.minute}`;
+        userText = `Quero agendar nesse horário: ${ddmmhhmm}${nlu.modality?` (${nlu.modality})`:""}`;
+        // Deixa seguir o fluxo normal (seus blocos de confirmação e criação de evento)
+      }
+      // Se veio só time, seu atalho "hora a partir da lista" cobre usando lastOffer; não mudamos aqui.
+    }
+    // Caso caia em "unknown" ou baixa confiança, seguimos pro seu fluxo atual.
+  }
+} catch (e) {
+  console.error("[nlu] erro:", e?.message || e);
+}
+// === FIM AI NLU MIDDLEWARE ===
+
+    
+    // === INTERPRETAR PEDIDO DE DATA FUTURA & RESPONDER COM LAYOUT NOVO (sem "opção N") ===
 try {
   const tz = process.env.TZ || "America/Sao_Paulo";
   const parsed = parseCandidateDateTime(userText, tz);
