@@ -670,32 +670,104 @@ try {
     // === SE A IA MENCIONAR QUE VAI ENVIAR HORÁRIOS, ANEXA A LISTA GERADA DO CALENDÁRIO ===
 let finalAnswer = answer;
 try {
-  // Dispara quando a IA anunciar que vai listar horários (ou usar gatilho manual "ENVIE_HORARIOS")
   const shouldList =
     /vou te enviar os hor[aá]rios livres/i.test(answer || "") ||
     /ENVIE_HORARIOS/i.test(answer || "");
 
   if (shouldList) {
-    // ===== 1) Tentar descobrir "QUAL DIA" o paciente quer =====
-    // A IA pode ter falado "do dia 25/10" no próprio 'answer'.
-    // Se não achar no 'answer', tenta no último texto do paciente (userText).
+    // ===== 1) Detecta a âncora de data/hora (se a paciente pediu um dia/horário) =====
     const findAnchorISO = (txt) => {
       try {
         const { found, startISO } = parseCandidateDateTime(
           String(txt || ""),
           process.env.TZ || "America/Sao_Paulo"
         );
-        // Se encontrou algo no futuro, usa como âncora (início do dia)
         if (found) {
           const d = new Date(startISO);
           const now = new Date();
           if (d.getTime() > now.getTime()) {
-            // normaliza para 00:00 do dia em questão
             const d0 = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0);
-            return d0.toISOString();
+            return { dayISO: d0.toISOString(), exactISO: new Date(startISO).toISOString() };
           }
         }
       } catch {}
+      return null;
+    };
+
+    const anchor = findAnchorISO(answer) || findAnchorISO(userText);
+
+    // ===== 2) Busca dos horários =====
+    let grouped, flat;
+    if (anchor?.dayISO) {
+      grouped = await listAvailableSlotsByDay({
+        fromISO: anchor.dayISO,
+        days: 1,
+        limitPerDay: 24
+      });
+      flat = await listAvailableSlots({
+        fromISO: anchor.dayISO,
+        days: 1,
+        limit: 30
+      });
+    } else {
+      grouped = await listAvailableSlotsByDay({
+        fromISO: new Date().toISOString(),
+        days: 5,
+        limitPerDay: 8
+      });
+      flat = await listAvailableSlots({
+        fromISO: new Date().toISOString(),
+        days: 5,
+        limit: 20
+      });
+    }
+
+    // ===== 3) Ordena por proximidade ao horário desejado (se houver hora ancorada) =====
+    const rankByProximity = (items, targetISO) => {
+      if (!targetISO || !Array.isArray(items)) return items || [];
+      const t = new Date(targetISO).getTime();
+      return [...items].sort((a, b) => {
+        const da = Math.abs(new Date(a.startISO).getTime() - t);
+        const db = Math.abs(new Date(b.startISO).getTime() - t);
+        return da - db;
+      });
+    };
+    const flatRanked = rankSlotsByProximity(flat, anchor?.exactISO);
+
+    // ===== 4) Prepara o CONTEXTO INVISÍVEL para a IA montar o texto =====
+    const hiddenContext = {
+      anchorRequestedISO: anchor?.exactISO || null,
+      groups: grouped,          // agrupado por dia (para IA escrever bonito)
+      flat: flatRanked,         // lista linear (para “opção 3” etc.)
+      guidance: {
+        locale: "pt-BR",
+        allowOptionN: true,
+        allowFreeTextDate: true,
+        askMissingFields: true  // nome, idade, telefone, motivo, modalidade
+      }
+    };
+
+    // ===== 5) CHAMA A IA DE NOVO, agora com o contexto invisível =====
+    // OBS: "appendMessage" grava no histórico da conversa para a IA ter memória.
+    appendMessage(from, "assistant", "[[CONTEXT_SLOTS_ATTACHED]]");
+    appendMessage(from, "system", "<DISPONIBILIDADES_JSON>" + JSON.stringify(hiddenContext) + "</DISPONIBILIDADES_JSON>");
+    // Importante: o "system" acima NÃO é enviado ao WhatsApp, só para a IA.
+
+    // Peça para a IA produzir a mensagem ao paciente usando o contexto
+    const followUp = await askAssistant({
+      from,
+      instruction:
+        "Use as DISPONIBILIDADES_JSON acima para redigir uma mensagem clara ao paciente, SEM mostrar JSON ou tags. " +
+        "Mostre horários próximos ao pedido da paciente (se existir), em português (pt-BR), com lista enxuta. " +
+        "Permita escolha por 'opção N' ou por 'DD/MM HH:MM'. Se não houver horários nessa data, ofereça o próximo dia com vagas. " +
+        "Em seguida, colete/valide os campos faltantes (nome completo, idade, telefone com DDD, motivo 1=Medicina da Dor/2=Pré-anestésica, modalidade Presencial/Tele)."
+    });
+
+    finalAnswer = followUp || "Certo! Pode me dizer o melhor dia/horário?";
+  }
+} catch (e) {
+  console.error("[slots-two-pass] erro:", e?.message || e);
+}
       return null;
     };
 
