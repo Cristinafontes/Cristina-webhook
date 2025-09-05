@@ -937,11 +937,10 @@ await createCalendarEvent({
           } else {
             console.warn("Confirmação detectada, mas não consegui interpretar data/hora:", textForParser);
           }
-        } catch (e) {
-          console.error("Erro ao criar evento no Google Calendar:", e?.response?.data || e);
-        }
-      }
-    }
+         } catch (e) {
+    console.error("Erro ao criar evento no Google Calendar:", e?.response?.data || e);
+  }
+}
     // ======== FIM DA REGRA DE CONFIRMAÇÃO ========
 
     // Memória + resposta ao paciente
