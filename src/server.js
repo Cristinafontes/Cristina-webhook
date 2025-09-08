@@ -806,12 +806,20 @@ await (async () => {
       });
     };
     const flatRanked = rankByProximity(flat, anchor?.exactISO);
+// PEGAR SÓ AS OPÇÕES MAIS PRÓXIMAS (ex.: 6 próximas)
+const offer = (flatRanked || []).slice(0, 6);
+
+// Guardar na memória para permitir "opção N" e confirmar depois
+const convMem = ensureConversation(from);
+convMem.lastSlots = offer;                 // opções que serão mostradas
+convMem.stage = "awaiting_slot_choice";    // aguardando escolha do horário
+convMem.updatedAt = Date.now();
 
     // (4) contexto invisível
     const hiddenContext = {
       anchorRequestedISO: anchor?.exactISO || null,
       groups: grouped,
-      flat: flatRanked,
+      flat: offer,
       guidance: { locale: "pt-BR", allowOptionN: true, allowFreeTextDate: true, askMissingFields: true }
     };
 
@@ -822,14 +830,17 @@ await (async () => {
 
     // (5) segunda chamada à IA
     const followUp = await askCristina({
-      userText:
-        "ATENÇÃO (instrução interna para a secretária): " +
-        "Use as DISPONIBILIDADES_JSON acima para redigir uma mensagem clara ao paciente, " +
-        "SEM mostrar JSON ou tags. Mostre horários próximos ao pedido da paciente (se existir), " +
-        "em pt-BR, com lista enxuta. Permita escolha por 'opção N' ou por 'DD/MM HH:MM'. " +
-        "Se não houver horários nessa data, ofereça o próximo dia com vagas. " +
-        "Depois, colete/valide os campos faltantes (nome completo, idade, telefone com DDD, " +
-        "motivo 1=Medicina da Dor/2=Pré-anestésica, modalidade Presencial/Tele).",
+        userText:
+    "ATENÇÃO (instrução interna para a secretária): " +
+    "NÃO cumprimente novamente e NÃO repita apresentação. Vá direto ao ponto. " +
+    "Use as DISPONIBILIDADES_JSON acima para redigir uma mensagem clara ao paciente, " +
+    "SEM mostrar JSON ou tags. Liste APENAS as opções em 'flat' (ordem do mais próximo ao mais distante), " +
+    "em pt-BR, com até 6 itens: 'Seguem as opções:' e depois cada item em uma linha (dia da semana, dd/mm, HH:MM). " +
+    "Permita o paciente responder por 'opção N' ou por 'DD/MM HH:MM'. " +
+    "Se não houver horários na data pedida, ofereça o próximo dia com vagas. " +
+    "Após o paciente ESCOLHER um horário, você DEVE seguir o fluxo do prompt: " +
+    "coletar e validar NOME COMPLETO, IDADE, TELEFONE com DDD, MOTIVO (1=Medicina da Dor; 2=Pré-anestésica) e MODALIDADE (Presencial/Tele). " +
+    "Se algo faltar, peça de forma objetiva. Só confirme o agendamento APÓS a escolha e coleta dos dados.",
       userPhone: String(from),
     });
 
