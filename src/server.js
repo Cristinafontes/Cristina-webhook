@@ -847,23 +847,16 @@ convMem.updatedAt = Date.now();
     // (5) segunda chamada à IA
     const followUp = await askCristina({
           userText:
-    "ATENÇÃO (instrução interna para a secretária): " +
-    "VOCÊ DEVE CONDUZIR a conversa sem repetir saudações. Use SOMENTE os dados do bloco DISPONIBILIDADES_JSON (já recebido na conversa) para responder. " +
-    "NUNCA invente horários, dias da semana ou datas que NÃO estejam no JSON. Se um horário não existir no JSON ou estiver fora do expediente, NÃO ofereça. " +
-    "Regras obrigatórias ao montar a resposta: " +
-    "1) Trabalhe APENAS com a lista 'flat' do DISPONIBILIDADES_JSON. Esses itens já foram filtrados pelos horários de trabalho e pelo Google Calendar. " +
-    "2) Liste no máximo 6 opções, em ordem do mais PRÓXIMO para o mais distante (cronológico). " +
-    "3) Se state.moreDatesRequested = true, responda de forma natural (ex.: 'Claro, olhando outros dias...') e mostre a NOVA lista que está em 'flat'. " +
-    "4) Se state.affirmative = true OU state.hasDateRequest = true, mostre diretamente as opções em 'flat'. " +
-    "5) Formato da lista: uma linha por opção, em pt-BR, com dia da semana, dd/mm e HH:MM. Ex.: 'terça-feira, dia 09/09, às 10:30'. " +
-    "6) Diga que a pessoa pode responder por 'opção N' (ex.: 'opção 2') ou digitando 'DD/MM HH:MM'. " +
-    "7) Se 'flat' estiver vazio: explique educadamente que NÃO há horários nesse recorte e pergunte se deseja ver outras datas. NÃO invente alternativas. " +
-    "8) Após a pessoa ESCOLHER um horário, siga o fluxo: colete e valide NOME COMPLETO, IDADE, TELEFONE (com DDD), MOTIVO (1=Medicina da Dor; 2=Pré-anestésica) e MODALIDADE (Presencial/Tele). " +
-    "   - Valide cada campo de forma objetiva (ex.: telefone com DDD, idade numérica). " +
-    "   - Se faltar algo, peça apenas o que falta. " +
-    "9) Mantenha respostas curtas, diretas e empáticas. Não exiba JSON, tags ou explicações técnicas. " +
-    "10) Jamais ofereça dias de fim de semana ou horários fora do expediente se não estiverem em 'flat' (ex.: NÃO cite sábado/domingo se não aparecerem).",
-
+  "INSTRUÇÃO INTERNA PARA A SECRETÁRIA CRISTINA: " +
+  "1. Você NÃO PODE inventar datas ou horários. Use SOMENTE os horários que estão em DISPONIBILIDADES_JSON.flat. " +
+  "2. Ignore qualquer suposição de agenda própria. Se não existir no JSON, diga claramente que não há horário. " +
+  "3. Liste no máximo 6 horários, do mais próximo para o mais distante. " +
+  "4. Se o paciente pedir 'outras datas', utilize novamente o DISPONIBILIDADES_JSON que o sistema enviar na próxima interação. " +
+  "5. Formato da resposta: 'dia da semana, DD/MM, às HH:MM'. " +
+  "6. Se não houver horários, responda: 'No momento não tenho horários disponíveis nesse período. Deseja que eu verifique outras datas?'. " +
+  "7. Depois que o paciente escolher um horário, colete nome completo, idade, telefone com DDD, motivo (1=Medicina da Dor; 2=Pré-anestésica) e modalidade (Presencial/Tele). " +
+  "8. Nunca ofereça sábado ou domingo, a menos que estejam no DISPONIBILIDADES_JSON. " +
+  "9. Nunca responda com mensagens genéricas como 'você deseja agendar uma consulta?'. Vá direto para os horários disponíveis.",
     });
 
     console.log("[TWO-PASS] followUp preview =", (followUp || "").slice(0, 120));
