@@ -846,21 +846,24 @@ convMem.updatedAt = Date.now();
 
     // (5) segunda chamada à IA
     const followUp = await askCristina({
-        userText:
-  "ATENÇÃO (instrução interna para a secretária): " +
-  "Você deve CONDUZIR a conversa de ponta a ponta, sem repetir saudações. " +
-  "Use as DISPONIBILIDADES_JSON acima (flat, groups, state, pagination) como contexto. " +
-  "Regras de comportamento:\n" +
-  "1) Se state.moreDatesRequested = true, gere NOVA LISTA usando 'flat' (essas já são as próximas opções). " +
-  "   Diga de forma natural 'Claro, olhando outros dias…' e mostre até 6 linhas (dia da semana, dd/mm, HH:MM). " +
-  "2) Se state.affirmative = true OU state.hasDateRequest = true, mostre diretamente a LISTA atual 'flat' (até 6 itens). " +
-  "3) Se nada disso, faça UMA pergunta objetiva para entender se a pessoa quer horários ou prefere outra data.\n" +
-  "Apresentação da lista: sem JSON, em pt-BR, até 6 itens, linha a linha, ordem do mais próximo ao mais distante. " +
-  "Permita resposta por 'opção N' ou por 'DD/MM HH:MM'. " +
-  "Após a pessoa ESCOLHER um horário, PROSSIGA com o fluxo: coletar e validar NOME COMPLETO, IDADE, TELEFONE com DDD, " +
-  "MOTIVO (1=Medicina da Dor; 2=Pré-anestésica) e MODALIDADE (Presencial/Tele). " +
-  "Se algo faltar, peça de forma objetiva. Só CONFIRME o agendamento ao final, depois de validar tudo. " +
-  "Não repita introduções; seja direta, clara e empática."
+          userText:
+    "ATENÇÃO (instrução interna para a secretária): " +
+    "VOCÊ DEVE CONDUZIR a conversa sem repetir saudações. Use SOMENTE os dados do bloco DISPONIBILIDADES_JSON (já recebido na conversa) para responder. " +
+    "NUNCA invente horários, dias da semana ou datas que NÃO estejam no JSON. Se um horário não existir no JSON ou estiver fora do expediente, NÃO ofereça. " +
+    "Regras obrigatórias ao montar a resposta: " +
+    "1) Trabalhe APENAS com a lista 'flat' do DISPONIBILIDADES_JSON. Esses itens já foram filtrados pelos horários de trabalho e pelo Google Calendar. " +
+    "2) Liste no máximo 6 opções, em ordem do mais PRÓXIMO para o mais distante (cronológico). " +
+    "3) Se state.moreDatesRequested = true, responda de forma natural (ex.: 'Claro, olhando outros dias...') e mostre a NOVA lista que está em 'flat'. " +
+    "4) Se state.affirmative = true OU state.hasDateRequest = true, mostre diretamente as opções em 'flat'. " +
+    "5) Formato da lista: uma linha por opção, em pt-BR, com dia da semana, dd/mm e HH:MM. Ex.: 'terça-feira, dia 09/09, às 10:30'. " +
+    "6) Diga que a pessoa pode responder por 'opção N' (ex.: 'opção 2') ou digitando 'DD/MM HH:MM'. " +
+    "7) Se 'flat' estiver vazio: explique educadamente que NÃO há horários nesse recorte e pergunte se deseja ver outras datas. NÃO invente alternativas. " +
+    "8) Após a pessoa ESCOLHER um horário, siga o fluxo: colete e valide NOME COMPLETO, IDADE, TELEFONE (com DDD), MOTIVO (1=Medicina da Dor; 2=Pré-anestésica) e MODALIDADE (Presencial/Tele). " +
+    "   - Valide cada campo de forma objetiva (ex.: telefone com DDD, idade numérica). " +
+    "   - Se faltar algo, peça apenas o que falta. " +
+    "9) Mantenha respostas curtas, diretas e empáticas. Não exiba JSON, tags ou explicações técnicas. " +
+    "10) Jamais ofereça dias de fim de semana ou horários fora do expediente se não estiverem em 'flat' (ex.: NÃO cite sábado/domingo se não aparecerem).",
+
     });
 
     console.log("[TWO-PASS] followUp preview =", (followUp || "").slice(0, 120));
