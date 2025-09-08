@@ -815,6 +815,34 @@ convMem.lastSlots = offer;                 // opções que serão mostradas
 convMem.stage = "awaiting_slot_choice";    // aguardando escolha do horário
 convMem.updatedAt = Date.now();
 
+    // Se o paciente já confirmou intenção OU pediu uma data, enviamos a lista de forma determinística
+if ((affirmative || hasDateRequest) && offer.length) {
+  // formata opções pt-BR
+  const fmtBR = (iso) => {
+    const tz = process.env.TZ || "America/Sao_Paulo";
+    const dt = new Date(iso);
+    const p = new Intl.DateTimeFormat("pt-BR", {
+      timeZone: tz, weekday: "long", day: "2-digit", month: "2-digit",
+      hour: "2-digit", minute: "2-digit"
+    }).formatToParts(dt).reduce((acc, i) => (acc[i.type] = i.value, acc), {});
+    // ex: "segunda-feira, dia 30/10, às 14:00"
+    return `${p.weekday}, dia ${p.day}/${p.month}, às ${p.hour}:${p.minute}`;
+  };
+
+  const linhas = offer.map((s, i) => `${i + 1}) ${fmtBR(s.startISO)}`).join("\n");
+
+  _final =
+    "Vou te enviar os horários livres. Depois me diga qual prefere para confirmar, tudo bem?\n" +
+    "Seguem as opções:\n" +
+    linhas +
+    "\n\nQual horário você prefere? (pode responder com 'opção N' ou 'DD/MM HH:MM')";
+
+  // sai do TWO-PASS usando esta resposta (sem chamar a IA aqui)
+  finalAnswer = _final;
+  return;
+}
+
+    
     // (4) contexto invisível
     const hiddenContext = {
       anchorRequestedISO: anchor?.exactISO || null,
