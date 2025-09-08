@@ -748,13 +748,16 @@ if (intentSchedule && !tooSoon) {
 await (async () => {
   let _final = answer; // acumulador local; no fim joga em finalAnswer
   try {
+    const wantsMoreDates = /\b(outra(s)?\s*data(s)?|mais\s+op(c|ç)ões|próximos?\s+dias|tem\s+outro\s+dia|tem\s+outros?\s+hor[aá]rios|mostrar\s+mais)\b/i
+  .test(userNorm);
     const shouldList =
       /vou te enviar os hor[aá]rios livres/i.test(answer || "") ||
       /ENVIE_HORARIOS/i.test(answer || "") ||
       /\b(agendar|marcar|remarcar|consulta|horario|disponivel|tem\s+vaga|proximos?\s+horarios?)\b/i.test(userNorm) ||
       (affirmative && invitedRecently) ||
-      hasDateRequest;
-
+      hasDateRequest ||
+      wantsMoreDates;
+    
     console.log("[TWO-PASS] shouldList =", shouldList);
     if (!shouldList) {
       finalAnswer = _final;
@@ -816,31 +819,6 @@ convMem.stage = "awaiting_slot_choice";    // aguardando escolha do horário
 convMem.updatedAt = Date.now();
 
     // Se o paciente já confirmou intenção OU pediu uma data, enviamos a lista de forma determinística
-if ((affirmative || hasDateRequest) && offer.length) {
-  // formata opções pt-BR
-  const fmtBR = (iso) => {
-    const tz = process.env.TZ || "America/Sao_Paulo";
-    const dt = new Date(iso);
-    const p = new Intl.DateTimeFormat("pt-BR", {
-      timeZone: tz, weekday: "long", day: "2-digit", month: "2-digit",
-      hour: "2-digit", minute: "2-digit"
-    }).formatToParts(dt).reduce((acc, i) => (acc[i.type] = i.value, acc), {});
-    // ex: "segunda-feira, dia 30/10, às 14:00"
-    return `${p.weekday}, dia ${p.day}/${p.month}, às ${p.hour}:${p.minute}`;
-  };
-
-  const linhas = offer.map((s, i) => `${i + 1}) ${fmtBR(s.startISO)}`).join("\n");
-
-  _final =
-    "Vou te enviar os horários livres. Depois me diga qual prefere para confirmar, tudo bem?\n" +
-    "Seguem as opções:\n" +
-    linhas +
-    "\n\nQual horário você prefere? (pode responder com 'opção N' ou 'DD/MM HH:MM')";
-
-  // sai do TWO-PASS usando esta resposta (sem chamar a IA aqui)
-  finalAnswer = _final;
-  return;
-}
 
     
     // (4) contexto invisível
@@ -848,7 +826,17 @@ if ((affirmative || hasDateRequest) && offer.length) {
       anchorRequestedISO: anchor?.exactISO || null,
       groups: grouped,
       flat: offer,
-      guidance: { locale: "pt-BR", allowOptionN: true, allowFreeTextDate: true, askMissingFields: true }
+      guidance: { locale: "pt-BR", allowOptionN: true, allowFreeTextDate: true, askMissingFields: true },
+    state: {
+    stage: convMem.stage,                  // "awaiting_slot_choice"
+    moreDatesRequested: wantsMoreDates,    // true se pediu "outras datas"
+    affirmative,                           // true se disse "sim", "quero agendar", etc.
+    hasDateRequest,                        // true se mencionou data/hora
+  },
+  pagination: {
+    fromISO,         // de onde começamos esta janela de 5 dias
+    windowDays: 5}
+     
     };
 
     appendMessage(from, "assistant", "[[CONTEXT_SLOTS_ATTACHED]]");
@@ -859,17 +847,20 @@ if ((affirmative || hasDateRequest) && offer.length) {
     // (5) segunda chamada à IA
     const followUp = await askCristina({
         userText:
-    "ATENÇÃO (instrução interna para a secretária): " +
-    "NÃO cumprimente novamente e NÃO repita apresentação. Vá direto ao ponto. " +
-    "Use as DISPONIBILIDADES_JSON acima para redigir uma mensagem clara ao paciente, " +
-    "SEM mostrar JSON ou tags. Liste APENAS as opções em 'flat' (ordem do mais próximo ao mais distante), " +
-    "em pt-BR, com até 6 itens: 'Seguem as opções:' e depois cada item em uma linha (dia da semana, dd/mm, HH:MM). " +
-    "Permita o paciente responder por 'opção N' ou por 'DD/MM HH:MM'. " +
-    "Se não houver horários na data pedida, ofereça o próximo dia com vagas. " +
-    "Após o paciente ESCOLHER um horário, você DEVE seguir o fluxo do prompt: " +
-    "coletar e validar NOME COMPLETO, IDADE, TELEFONE com DDD, MOTIVO (1=Medicina da Dor; 2=Pré-anestésica) e MODALIDADE (Presencial/Tele). " +
-    "Se algo faltar, peça de forma objetiva. Só confirme o agendamento APÓS a escolha e coleta dos dados.",
-      userPhone: String(from),
+  "ATENÇÃO (instrução interna para a secretária): " +
+  "Você deve CONDUZIR a conversa de ponta a ponta, sem repetir saudações. " +
+  "Use as DISPONIBILIDADES_JSON acima (flat, groups, state, pagination) como contexto. " +
+  "Regras de comportamento:\n" +
+  "1) Se state.moreDatesRequested = true, gere NOVA LISTA usando 'flat' (essas já são as próximas opções). " +
+  "   Diga de forma natural 'Claro, olhando outros dias…' e mostre até 6 linhas (dia da semana, dd/mm, HH:MM). " +
+  "2) Se state.affirmative = true OU state.hasDateRequest = true, mostre diretamente a LISTA atual 'flat' (até 6 itens). " +
+  "3) Se nada disso, faça UMA pergunta objetiva para entender se a pessoa quer horários ou prefere outra data.\n" +
+  "Apresentação da lista: sem JSON, em pt-BR, até 6 itens, linha a linha, ordem do mais próximo ao mais distante. " +
+  "Permita resposta por 'opção N' ou por 'DD/MM HH:MM'. " +
+  "Após a pessoa ESCOLHER um horário, PROSSIGA com o fluxo: coletar e validar NOME COMPLETO, IDADE, TELEFONE com DDD, " +
+  "MOTIVO (1=Medicina da Dor; 2=Pré-anestésica) e MODALIDADE (Presencial/Tele). " +
+  "Se algo faltar, peça de forma objetiva. Só CONFIRME o agendamento ao final, depois de validar tudo. " +
+  "Não repita introduções; seja direta, clara e empática."
     });
 
     console.log("[TWO-PASS] followUp preview =", (followUp || "").slice(0, 120));
