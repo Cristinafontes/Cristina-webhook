@@ -603,34 +603,49 @@ async function handleInbound(req, res) {
       return;
     }
 
-// === INTENÇÃO DE CANCELAMENTO ===
-// (deixa a conversa em 'modo cancel', assim data/horário não disparam o fluxo de AGENDAMENTO)
+// === INTENÇÃO DE CANCELAMENTO / REAGENDAMENTO ===
+// (entra em modo "cancel"; se for reagendar, guarda para voltar ao agendamento depois)
 {
   const convMem = ensureConversation(from);
-  const cancelIntent = /\b(cancel(ar|amento)|desmarcar|quero\s*cancelar|remarcar|remarca[cç][aã]o)\b/i;
+
+  // Reagendar / remarcar
+  const rescheduleIntent =
+    /\b(reagend(ar|amento)|remarc(ar|ação)|mudar\s*(o\s*)?hor[áa]rio|trocar\s*(o\s*)?hor[áa]rio|adiar)\b/i;
+
+  // Cancelar puro
+  const cancelIntent =
+    /\b(cancel(ar|amento)|desmarcar|quero\s*cancelar)\b/i;
+
+  if (rescheduleIntent.test(userText)) {
+    convMem.mode = "cancel";
+    convMem.after = "schedule";            // <- sinaliza "voltar para agendar"
+    convMem.cancelCandidates = null;
+    convMem.updatedAt = Date.now();
+
+    const msg =
+      "Claro, para que possamos reagendar sua consulta, " +
+      "primeiro vamos cancelar a consulta previamente agendada e, " +
+      "em seguida, prosseguir com o agendamento da nova. " +
+      'Por favor, me informe a **data e horário** do seu agendamento atual (ex.: "26/09 09:00").';
+    await sendWhatsAppText({ to: from, text: msg });
+    return;
+  }
 
   if (cancelIntent.test(userText)) {
-  convMem.mode = "cancel";
-  convMem.cancelCandidates = null;
+    convMem.mode = "cancel";
+    convMem.after = null;                   // cancelamento simples
+    convMem.cancelCandidates = null;
+    convMem.updatedAt = Date.now();
 
-  // <- NOVO: se o paciente pediu para "remarcar/reagendar", vamos voltar ao agendamento após cancelar
-  const reResched = /\b(reagend|remarc|remarcar|reagendar|marcar\s*de\s*novo)\b/i;
-  convMem.after = reResched.test(userText) ? "schedule" : null;
-
-  convMem.updatedAt = Date.now();
-
-  const intro = convMem.after === "schedule"
-    ? "Claro, para que possamos remarcar, primeiro vamos cancelar a consulta atual e, em seguida, prosseguir com o novo agendamento."
-    : "Certo! Para cancelar, me informe os dados do agendamento.";
-
-  await sendWhatsAppText({
-    to: from,
-    text: `${intro}\n\nMe informe a **data e horário** do agendamento (ex.: "26/09 09:00").`
-  });
-  return; // evita cair no restante do fluxo (inclui “opção N” e listagem de horários)
+    await sendWhatsAppText({
+      to: from,
+      text: 'Certo! Para cancelar, me informe a **data e horário** do agendamento (ex.: "26/09 09:00").'
+    });
+    return;
+  }
 }
-}
-// === MODO CANCELAMENTO: interpretar data/hora e cancelar ===
+
+    // === MODO CANCELAMENTO: interpretar data/hora e cancelar ===
 {
   const convMem = getConversation(from);
   if (convMem?.mode === "cancel") {
@@ -679,6 +694,40 @@ async function handleInbound(req, res) {
     }
 
     // 3) sair do modo cancelamento e, se for reagendamento, voltar ao agendamento
+    // 3) sair do modo cancelamento e, se for reagendamento, voltar ao agendamento
+if (convMem.after === "schedule") {
+  // limpa o estado de cancelamento
+  convMem.mode = null;
+  convMem.after = null;
+
+  // lista horários para remarcar
+  const slots = await listAvailableSlots({
+    fromISO: new Date().toISOString(),
+    days: 7,
+    limit: 10,
+  });
+
+  let msg;
+  if (!slots.length) {
+    msg = "Cancelamento concluído. Vamos remarcar? " +
+          "No momento não encontrei horários livres nos próximos dias. " +
+          'Se preferir, me diga uma **data específica** (ex.: "24/09").';
+  } else {
+    const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`).join("\n");
+    msg = "Cancelamento concluído. Vamos remarcar agora. Seguem as **opções mais próximas**:\n" +
+          linhas +
+          '\n\nVocê pode responder com **opção N** (ex.: "opção 3") ' +
+          'ou digitar **data e horário** (ex.: "24/09 14:00").';
+
+    // habilita "opção N"
+    convMem.lastSlots = slots;
+    convMem.updatedAt = Date.now();
+  }
+
+  await sendWhatsAppText({ to: from, text: msg });
+  return; // não deixa cair em outras regras
+}
+
 const shouldReschedule = convMem.after === "schedule";
 convMem.mode = null;
 convMem.cancelCandidates = null;
