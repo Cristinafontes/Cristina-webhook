@@ -267,8 +267,15 @@ const isLikelyNameLocal = (s) => {
   const parts = v.split(/\s+/).filter(Boolean);
   if (parts.length < 1 || parts.length > 5) return false;
 
-  const bad = /\b(agendar|consulta|presencial|telemedicina|quero|cancelar|remarcar|hor[áa]rio|dor|avaliac[aã]o|idade|telefone|motivo|endereco|endereço|data)\b/i;
-  if (bad.test(v)) return false;
+  // novas rejeições: linguagem comum de pedido, datas e dias da semana
+  const BAD_WORDS =
+    /\b(agendar|agendo|agenda|agendamento|marcar|marque|consulta|consultar|presencial|telemedicina|teleconsulta|quero|queria|gostaria|prefer(ia|o)|confirmar|confirmo|avaliac[aã]o|pre[\s-]?anest|anestesia|idade|telefone|motivo|enderec[oó]|data|dia|hoje|amanh[ãa]|depois|manh[ãa]|tarde|noite)\b/i;
+  if (BAD_WORDS.test(v)) return false;
+
+  // rejeita dias da semana e meses
+  const WEEKDAYS = /\b(domingo|segunda|ter[cç]a|quarta|quinta|sexta|s[áa]bado)s?\b/i;
+  const MONTHS   = /\b(janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\b/i;
+  if (WEEKDAYS.test(v) || MONTHS.test(v)) return false;
 
   return true;
 };
@@ -338,6 +345,7 @@ if (!nameFromUser) {
 if (nameFromUser && isLikelyNameLocal(nameFromUser)) {
   name = nameFromUser.trim();
 } else {
+  // fallback mais seguro
   const senderName = (payload?.sender?.name || "").toString().trim();
   name = isLikelyNameLocal(senderName) ? senderName : "Paciente (WhatsApp)";
 }
@@ -692,11 +700,11 @@ try {
 }
 
     const trimmed = (userText || "").trim().toLowerCase();
+  
     if (["reset", "reiniciar", "reiniciar conversa", "novo atendimento"].includes(trimmed)) {
-      resetConversation(from);
-      await sendWhatsAppText({ to: from, text: "Conversa reiniciada. Como posso ajudar?" });
-      return;
-    }
+  resetConversation(from);
+  return;
+}
 
     // Montagem de contexto para a IA
     const conv = getConversation(from);
@@ -752,11 +760,11 @@ try {
         `Se preferir, me diga uma **data específica** (ex.: "24/09") que eu verifico para você.`;
     } else {
       const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`);
-      finalAnswer =
-        `Perfeito${name ? `, ${name}` : ""}! Seguem **as próximas opções**:\n` +
-        linhas.join("\n") +
-        `\n\nPode responder com **opção N** (ex.: "opção 3") ` +
-        `ou digitar **data e horário** (ex.: "24/09 14:00").`;
+finalAnswer =
+  "Claro, escolha uma dentre as opções mais próximas que seguem abaixo:\n" +
+  linhas.join("\n") +
+  "\n\nVocê pode responder com **opção N** (ex.: \"opção 3\") ou digitar **data e horário** (ex.: \"24/09 14:00\").";
+
       
       const convMem = ensureConversation(from);
       convMem.lastSlots = slots;
@@ -840,12 +848,6 @@ const location =
   modality === "Telemedicina"
     ? "Telemedicina (link será enviado)"
     : (process.env.CLINIC_ADDRESS || "Clínica");
-
-            // 1) Envia aviso imediato ao paciente
-await sendWhatsAppText({
-  to: from,
-  text: "Perfeito, vou verificar a disponibilidade e te confirmo já."
-});
             
             // === CHECA CONFLITO NO CALENDÁRIO ANTES DE CRIAR ===
 const { busy, conflicts } = await isSlotBlockedOrBusy({ startISO, endISO });
