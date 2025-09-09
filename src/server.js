@@ -850,12 +850,12 @@ finalAnswer =
 } catch (e) {
   console.error("[slots-append] erro:", e?.message || e);
 }
-  }
     
     // ======== DISPARO DE CANCELAMENTO (formato EXATO) ========
     // "Pronto! Sua consulta com a Dra. Jenifer está cancelada para o dia dd/mm/aa HH:MM"
     try {
-      const cancelRegex = /^Pronto!\s*Sua consulta com a Dra\.?\s*Jenifer está cancelada para o dia\s+(\d{2})\/(\d{2})\/(\d{2})\s+(\d{1,2}:\d{2})\.?$/i;
+     const cancelRegex =
+  /^Pronto!\s*Sua consulta com a Dra\.?\s*Jenifer está cancelada para o dia\s+(\d{2})\/(\d{2})(?:\/(\d{2}))?\s+(\d{1,2}:\d{2})\.?$/i;
       if (answer && cancelRegex.test(answer)) {
         const cancelURLBase = process.env.CANCEL_SERVER_URL || "https://charming-growth-production.up.railway.app";
         const endpoint = `${cancelURLBase.replace(/\/+$/,'')}/cancel-from-message`;
