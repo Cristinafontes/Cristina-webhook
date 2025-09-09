@@ -597,19 +597,25 @@ async function handleInbound(req, res) {
 // === ATALHO: se o paciente responder "opção 3" (ou só "3"), injeta a data/hora do slot escolhido ===
 try {
   const convMem = getConversation(from);
-  const mOpt = (userText || "").match(/\bop(c[aã]o|ção)?\s*(\d+)\b|\b(\d+)\b/i);
+  const txt = (userText || "").trim();
+
+  // Aceita apenas:
+  //  - "opcao 3" / "opção 3" (com variações de espaço/acentos), OU
+  //  - "3" sozinho na mensagem
+  const mOpt =
+    txt.match(/^\s*op[cç][aã]o\s*(\d+)\s*$/i) ||
+    txt.match(/^\s*(\d+)\s*$/);
+
   if (mOpt && convMem?.lastSlots && Array.isArray(convMem.lastSlots)) {
-    const idx = Number(mOpt[2] || mOpt[3]) - 1;
+    const idx = Number(mOpt[1]) - 1;
     const chosen = convMem.lastSlots[idx];
     if (chosen) {
-      // transforma em texto que sua IA já entende
       const dt = new Date(chosen.startISO);
       const tz = process.env.TZ || "America/Sao_Paulo";
       const pad = (n) => String(n).padStart(2, "0");
       const fmt = new Intl.DateTimeFormat("pt-BR", {
         timeZone: tz, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"
-      }).formatToParts(dt)
-        .reduce((acc, p) => (acc[p.type] = p.value, acc), {});
+      }).formatToParts(dt).reduce((acc, p) => (acc[p.type] = p.value, acc), {});
       const ddmmhhmm = `${fmt.day}/${fmt.month} ${fmt.hour}:${fmt.minute}`;
       userText = `Quero agendar nesse horário: ${ddmmhhmm}`;
     }
@@ -619,6 +625,71 @@ try {
 }
 
     safeLog("INBOUND", req.body);
+// === PEDIDO DE DATA ESPECÍFICA (ex.: "tem dia 24/09?", "quero dia 24/09") ===
+try {
+  const raw = String(userText || "");
+  // dd/mm ou dd/mm/aa(aa) – aceita "dia 24/09", "24-09", etc.
+  const mDate = raw.match(/(?:\bdia\s*)?(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?/i);
+
+  // horas opcionais (ex.: 14h, 14:00, 9:30)
+  const mTime = raw.match(/\b(\d{1,2})(?:[:h](\d{2}))\b/i);
+
+  if (mDate) {
+    const tz = process.env.TZ || "America/Sao_Paulo";
+    let dd = String(mDate[1]).padStart(2, "0");
+    let mm = String(mDate[2]).padStart(2, "0");
+    let yyyy;
+    if (mDate[3]) {
+      const yy = String(mDate[3]);
+      yyyy = yy.length === 2 ? (2000 + Number(yy)) : Number(yy);
+    } else {
+      // sem ano: assume ano atual
+      yyyy = new Date().getFullYear();
+    }
+
+    // Se o paciente já deu hora junto (ex.: "24/09 14:00"), convertemos para intenção direta de agendar
+    if (mTime) {
+      const hh = String(mTime[1]).padStart(2, "0");
+      const mi = String(mTime[2] || "00").padStart(2, "0");
+      userText = `Quero agendar nesse horário: ${dd}/${mm} ${hh}:${mi}`;
+      // segue o fluxo normal (IA vai confirmar ou pedir algo)
+    } else {
+      // Só a DATA -> listamos os horários desse dia
+      const dayStart = new Date(`${yyyy}-${mm}-${dd}T00:00:00`);
+      // Lista apenas o próprio dia:
+      const slots = await listAvailableSlots({
+        fromISO: dayStart.toISOString(),
+        days: 1,
+        limit: 10
+      });
+
+      const convMem = ensureConversation(from);
+      convMem.lastSlots = slots;
+      convMem.updatedAt = Date.now();
+
+      const { name } = extractPatientInfo({ payload: p, phone: from, conversation: getConversation(from) });
+
+      if (!slots.length) {
+        const msg =
+          `Olá${name ? `, ${name}` : ""}! Para **${dd}/${mm}** não encontrei horários livres.\n` +
+          `Posso te enviar alternativas próximas dessa data ou procurar outra data que você prefira.`;
+        appendMessage(from, "assistant", msg);
+        await sendWhatsAppText({ to: from, text: msg });
+      } else {
+        const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`);
+        const msg =
+          `Claro${name ? `, ${name}` : ""}! Para **${dd}/${mm}** tenho estas opções:\n` +
+          linhas.join("\n") +
+          `\n\nResponda com **opção N** (ex.: "opção 3") ou digite a data e horário desejados (ex.: "24/09 14:00").`;
+        appendMessage(from, "assistant", msg);
+        await sendWhatsAppText({ to: from, text: msg });
+      }
+      return; // já respondemos com as opções do dia solicitado
+    }
+  }
+} catch (e) {
+  console.error("[future-date] erro:", e?.message || e);
+}
 
     const trimmed = (userText || "").trim().toLowerCase();
     if (["reset", "reiniciar", "reiniciar conversa", "novo atendimento"].includes(trimmed)) {
@@ -665,23 +736,28 @@ try {
 let finalAnswer = answer;
 try {
   const shouldList = /vou te enviar os hor[aá]rios livres/i.test(answer || "");
-  if (shouldList) {
+    if (shouldList) {
     const slots = await listAvailableSlots({
-  fromISO: new Date().toISOString(), // força começar de hoje
-  days: 7,                           // só os próximos 7 dias
-  limit: 10
-});
+      fromISO: new Date().toISOString(),
+      days: 7,
+      limit: 10
+    });
+
+    const { name } = extractPatientInfo({ payload: p, phone: from, conversation: getConversation(from) });
 
     if (!slots.length) {
-      finalAnswer = (answer || "") + "\n\nNo momento não encontrei horários livres nos próximos dias.";
+      finalAnswer =
+        `Obrigado pelo contato${name ? `, ${name}` : ""}! ` +
+        `No momento não encontrei horários livres nos próximos dias.\n` +
+        `Se preferir, me diga uma **data específica** (ex.: "24/09") que eu verifico para você.`;
     } else {
       const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`);
-finalAnswer =
-  "Opções disponíveis:\n" +
-  linhas.join("\n") +
-  "\n\nSe preferir, pode responder com a opção (ex.: 'opção 3') ou digitar a data e hora.";
+      finalAnswer =
+        `Perfeito${name ? `, ${name}` : ""}! Seguem **as próximas opções**:\n` +
+        linhas.join("\n") +
+        `\n\nPode responder com **opção N** (ex.: "opção 3") ` +
+        `ou digitar **data e horário** (ex.: "24/09 14:00").`;
       
-      // guarda na memória da conversa para permitir "opção 3"
       const convMem = ensureConversation(from);
       convMem.lastSlots = slots;
       convMem.updatedAt = Date.now();
