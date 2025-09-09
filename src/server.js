@@ -789,13 +789,31 @@ await (async () => {
 
     // (2) busca slots
     let grouped, flat;
-    if (anchor?.dayISO) {
-      grouped = await listAvailableSlotsByDay({ fromISO: anchor.dayISO, days: 1, limitPerDay: 24 });
-      flat    = await listAvailableSlots({     fromISO: anchor.dayISO, days: 1, limit: 30 });
-    } else {
-      const fromISO = new Date().toISOString();
-      grouped = await listAvailableSlotsByDay({ fromISO, days: 5, limitPerDay: 8 });
-      flat    = await listAvailableSlots({     fromISO, days: 5, limit: 20 });
+    const mem2 = ensureConversation(from);
+let base;
+
+if (anchor?.dayISO) {
+  // se a paciente escreveu uma data específica
+  base = new Date(anchor.dayISO);
+  mem2.offerFromISO = base.toISOString();
+} else {
+  if (wantsMoreDates && mem2.offerFromISO) {
+    // só avança quando ela pede “outras datas”
+    base = new Date(mem2.offerFromISO);
+    base.setDate(base.getDate() + 5); // avança 5 dias
+    mem2.offerFromISO = base.toISOString();
+  } else {
+    // conversa nova ou só “sim/quero agendar”: recomeça do agora
+    base = new Date();
+    mem2.offerFromISO = base.toISOString();
+  }
+}
+
+const fromISO = mem2.offerFromISO;
+
+// busca os próximos 5 dias úteis a partir do fromISO
+grouped = await listAvailableSlotsByDay({ fromISO, days: 5, limitPerDay: 8 });
+flat    = await listAvailableSlots({     fromISO, days: 5, limit: 20 });
     }
 
     // (3) rank por proximidade
