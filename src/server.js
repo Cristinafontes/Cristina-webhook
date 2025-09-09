@@ -604,7 +604,6 @@ async function handleInbound(req, res) {
     }
 
 // === INTENÇÃO DE CANCELAMENTO / REAGENDAMENTO ===
-// (entra em modo "cancel"; se for reagendar, guarda para voltar ao agendamento depois)
 {
   const convMem = ensureConversation(from);
 
@@ -1062,33 +1061,33 @@ await createCalendarEvent({
           console.error("Erro ao criar evento no Google Calendar:", e?.response?.data || e);
         }
       }
-    }// ======== FIM DA REGRA DE CONFIRMAÇÃO ========
+    }
+  // ======== FIM DA REGRA DE CONFIRMAÇÃO ========
 
 // Memória + resposta ao paciente
 appendMessage(from, "user", userText);
 
 if (finalAnswer) {
-  // remove frases indesejadas da resposta antes de enviar
+  // (opcional) filtros de linguagem
   finalAnswer = finalAnswer
     .replace(/vou verificar a disponibilidade.*?(confirmo já)?/gi, "")
     .replace(/vou verificar.*?(disponibilidade|agenda)?/gi, "")
     .replace(/deixe[- ]?me checar.*?/gi, "")
     .replace(/vou confirmar.*?/gi, "")
     .replace(/vou conferir.*?/gi, "")
-    .replace(/já te confirmo.*?/gi, "");
-
-  // limpa espaços extras que sobrarem
-  finalAnswer = finalAnswer.trim();
+    .replace(/já te confirmo.*?/gi, "")
+    .trim();
 
   appendMessage(from, "assistant", finalAnswer);
   await sendWhatsAppText({ to: from, text: finalAnswer });
 }
 
-// <-- FECHA o try global que começou no início do handleInbound()
+// <-- fecha o try global do handleInbound
 } catch (err) {
   console.error("ERR inbound:", err?.response?.data || err);
 }
-// <-- FECHA a função handleInbound
+
+// <-- fecha a função handleInbound
 }
 
 // =====================
