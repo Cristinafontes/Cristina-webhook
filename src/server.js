@@ -743,6 +743,23 @@ if (intentSchedule && !tooSoon) {
   convMem.lastListAt = nowTs;
 }
 
+function formatNumberedOptions(flat, tz = process.env.TZ || "America/Sao_Paulo") {
+  if (!Array.isArray(flat) || !flat.length) return null;
+
+  const fmtDay = new Intl.DateTimeFormat("pt-BR", { weekday: "long", timeZone: tz });
+  const fmtDM  = new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "2-digit", timeZone: tz });
+  const fmtHM  = new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit", timeZone: tz });
+
+  const lines = [];
+  flat.forEach((s, i) => {
+    const d = new Date(s.startISO);
+    const weekday = String(fmtDay.format(d)).replace(/^\s+|\s+$/g, "");
+    const [dd, mm] = fmtDM.format(d).split("/");
+    const hhmm = fmtHM.format(d);
+    lines.push(`${i + 1}) ${weekday}, ${dd}/${mm} às ${hhmm}`);
+  });
+  return lines.join("\n");
+}
 
 // === BLOCO 2-PASSOS (ISOLADO) — BUSCA SLOTS E DELEGA TEXTO À IA ===
 await (async () => {
@@ -788,38 +805,95 @@ await (async () => {
     const anchor = findAnchorISO(answer) || findAnchorISO(userText);
 
     // (2) busca slots
+let grouped = [];
+let flatAllDays = [];
+let offer = [];
+let infoPrefix = "";
 try {
-  let grouped, flat;
   const mem2 = ensureConversation(from);
-  let base;
+
+  // ancora pelo texto do usuário (ou da própria resposta gerada antes)
+  const anchor = findAnchorISO(answer) || findAnchorISO(userText);
 
   if (anchor?.dayISO) {
-    // se a paciente escreveu uma data específica
-    base = new Date(anchor.dayISO);
-    mem2.offerFromISO = base.toISOString();
-  } else {
-    if (wantsMoreDates && mem2.offerFromISO) {
-      // só avança quando ela pede “outras datas”
-      base = new Date(mem2.offerFromISO);
-      base.setDate(base.getDate() + 5); // avança 5 dias
-      mem2.offerFromISO = base.toISOString();
+    // paciente pediu um dia específico -> tenta esse dia ou o próximo com vagas
+    const probe = await findDayOrNextWithSlots({
+      targetISO: anchor.dayISO,
+      searchDays: 14,
+      limitPerDay: 8
+    });
+    grouped = probe.groups || [];
+
+    // se retornou grupos, pegamos o 1º dia e montamos os slots planos desse dia
+    if (grouped.length) {
+      const firstDate = grouped[0].dateLabel; // "dd/mm/aa"
+      const [dd, mm, yy] = firstDate.split("/");
+      // monta um fromISO 00:00 local desse dia
+      const baseDate = new Date();
+      baseDate.setFullYear(2000 + Number(yy), Number(mm) - 1, Number(dd));
+      baseDate.setHours(0, 0, 0, 0);
+
+      // pega todos os horários deste dia (planos), para numerar
+      flatAllDays = await listAvailableSlots({ fromISO: baseDate.toISOString(), days: 1, limit: 200 });
+      // ordena cronologicamente por segurança
+      flatAllDays.sort((a, b) => new Date(a.startISO) - new Date(b.startISO));
+
+      offer = flatAllDays.slice(0, 6); // no máx. 6 opções
+      infoPrefix = (probe.status === "exact-day")
+        ? "Claro! Seguem os horários desse dia:\n"
+        : `Não encontrei horários no dia solicitado. Seguem do próximo dia com vagas:\n`;
     } else {
-      // conversa nova ou só “sim/quero agendar”: recomeça do agora
-      base = new Date();
-      mem2.offerFromISO = base.toISOString();
+      // sem qualquer horário nos próximos 14 dias
+      finalAnswer = "No momento não encontrei janelas livres próximas dessa data. Deseja que eu verifique outras datas?";
+      throw new Error("no-slots");
     }
+  } else {
+    // conversa nova ou só “sim/quero agendar”: janela dos próximos 5 dias úteis
+    let base = new Date();
+    if (wantsMoreDates && mem2.offerFromISO) {
+      base = new Date(mem2.offerFromISO);
+      base.setDate(base.getDate() + 5); // paginação para frente
+    }
+    mem2.offerFromISO = base.toISOString();
+
+    grouped = await listAvailableSlotsByDay({ fromISO: mem2.offerFromISO, days: 5, limitPerDay: 8 });
+    const flat = await listAvailableSlots({ fromISO: mem2.offerFromISO, days: 5, limit: 200 });
+    flat.sort((a, b) => new Date(a.startISO) - new Date(b.startISO));
+
+    // Se o usuário digitou uma hora exata, ranqueia por proximidade dessa âncora
+    const ranked = anchor?.exactISO
+      ? (flat.slice().sort((a, b) =>
+          Math.abs(new Date(a.startISO) - new Date(anchor.exactISO)) -
+          Math.abs(new Date(b.startISO) - new Date(anchor.exactISO))
+        ))
+      : flat;
+
+    offer = ranked.slice(0, 6);
+    infoPrefix = "Vou te enviar os horários disponíveis mais próximos:\n";
   }
 
-  const fromISO = mem2.offerFromISO;
+  // guarda para “opção N”
+  const mem3 = ensureConversation(from);
+  mem3.lastSlots = offer;
+  mem3.stage = "awaiting_slot_choice";
+  mem3.updatedAt = Date.now();
 
-  // busca os próximos 5 dias úteis a partir do fromISO
-  grouped = await listAvailableSlotsByDay({ fromISO, days: 5, limitPerDay: 8 });
-  flat    = await listAvailableSlots({     fromISO, days: 5, limit: 20 });
+  // texto determinístico: por dia (bloco) + opções numeradas (curtas)
+  const byDayText = formatSlotsForPatient(grouped);
+  const numbered  = formatNumberedOptions(offer);
+
+  finalAnswer =
+    infoPrefix +
+    (numbered ? numbered + "\n\n" : "") +
+    (byDayText || "") +
+    "\nVocê pode responder com o número da opção (ex.: 'opção 2') ou digitar outra data (ex.: 12/09 15:00).";
 
 } catch (err) {
-  console.error("Erro ao buscar slots:", err);
+  if (err.message !== "no-slots") {
+    console.error("Erro ao buscar slots:", err);
+    finalAnswer = "Tive um imprevisto ao consultar a agenda agora. Pode me dizer outra data aproximada que eu confiro já?";
+  }
 }
-
     // (3) rank por proximidade
     const rankByProximity = (items, targetISO) => {
       if (!targetISO || !Array.isArray(items)) return items || [];
