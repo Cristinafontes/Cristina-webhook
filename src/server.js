@@ -807,7 +807,7 @@ await (async () => {
     // (2) busca slots
 let grouped = [];
 let flatAllDays = [];
-let offer = [];
+let offers = [];
 let infoPrefix = "";
 try {
   const mem2 = ensureConversation(from);
@@ -838,7 +838,7 @@ try {
       // ordena cronologicamente por segurança
       flatAllDays.sort((a, b) => new Date(a.startISO) - new Date(b.startISO));
 
-      offer = flatAllDays.slice(0, 6); // no máx. 6 opções
+      offers = flatAllDays.slice(0, 6); // no máx. 6 opções
       infoPrefix = (probe.status === "exact-day")
         ? "Claro! Seguem os horários desse dia:\n"
         : `Não encontrei horários no dia solicitado. Seguem do próximo dia com vagas:\n`;
@@ -874,13 +874,13 @@ try {
 
   // guarda para “opção N”
   const mem3 = ensureConversation(from);
-  mem3.lastSlots = offer;
+  mem3.lastSlots = offers;
   mem3.stage = "awaiting_slot_choice";
   mem3.updatedAt = Date.now();
 
   // texto determinístico: por dia (bloco) + opções numeradas (curtas)
   const byDayText = formatSlotsForPatient(grouped);
-  const numbered  = formatNumberedOptions(offer);
+  const numbered  = formatNumberedOptions(offers);
 
   finalAnswer =
     infoPrefix +
