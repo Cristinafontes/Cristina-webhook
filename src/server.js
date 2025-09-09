@@ -762,9 +762,8 @@ if (shouldReschedule) {
 }
 
 return; // cancelou, sem reagendar
-
-}
-    
+  }
+} 
 // === ATALHO: "opção N" (somente fora do modo cancelamento) ===
 try {
   const convMem = getConversation(from);
