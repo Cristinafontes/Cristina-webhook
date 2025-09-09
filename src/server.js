@@ -621,45 +621,84 @@ async function handleInbound(req, res) {
     return; // evita cair no restante do fluxo (inclui “opção N” e listagem de horários)
   }
 }
-
-    
-// === ATALHO: se o paciente responder "opção 3" (ou só "3"), injeta a data/hora do slot escolhido ===
-
-    try {
-  const mode = getConversation(from)?.mode;
-  if (mode === "cancel") {
-    // em modo cancelamento não transformamos "3" em escolha de slot
-  } else {
-    // ... (deixe aqui o conteúdo existente do atalho "opção N")
-  }
-} catch (e) {
-  console.error("[option-pick] erro:", e?.message || e);
-}
-
-    
-    try {
+// === MODO CANCELAMENTO: interpretar data/hora e cancelar ===
+{
   const convMem = getConversation(from);
-  const txt = (userText || "").trim();
+  if (convMem?.mode === "cancel") {
+    const txt = String(userText || "");
 
-  // Aceita apenas:
-  //  - "opcao 3" / "opção 3" (com variações de espaço/acentos), OU
-  //  - "3" sozinho na mensagem
-  const mOpt =
-    txt.match(/^\s*op[cç][aã]o\s*(\d+)\s*$/i) ||
-    txt.match(/^\s*(\d+)\s*$/);
+    // dd/mm[/aa] + hora opcional ("9", "09", "9h", "9:00")
+    const mDate = txt.match(/(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?/);
+    const mTime = txt.match(/\b(\d{1,2})(?:[:h](\d{2}))?\b/);
 
-  if (mOpt && convMem?.lastSlots && Array.isArray(convMem.lastSlots)) {
-    const idx = Number(mOpt[1]) - 1;
-    const chosen = convMem.lastSlots[idx];
-    if (chosen) {
-      const dt = new Date(chosen.startISO);
-      const tz = process.env.TZ || "America/Sao_Paulo";
-      const pad = (n) => String(n).padStart(2, "0");
-      const fmt = new Intl.DateTimeFormat("pt-BR", {
-        timeZone: tz, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"
-      }).formatToParts(dt).reduce((acc, p) => (acc[p.type] = p.value, acc), {});
-      const ddmmhhmm = `${fmt.day}/${fmt.month} ${fmt.hour}:${fmt.minute}`;
-      userText = `Quero agendar nesse horário: ${ddmmhhmm}`;
+    if (!mDate) {
+      await sendWhatsAppText({ to: from, text: 'Para cancelar, me envie a **data** (ex.: "26/09") e, se possível, o **horário** (ex.: "09:00").' });
+      return;
+    }
+    if (!mTime) {
+      await sendWhatsAppText({ to: from, text: 'Perfeito! Me diga também o **horário** (ex.: "09:00") desse agendamento para eu localizar e cancelar.' });
+      return;
+    }
+
+    const dd = String(mDate[1]).padStart(2, "0");
+    const mm = String(mDate[2]).padStart(2, "0");
+    const yyyyFull = mDate[3] ? (String(mDate[3]).length === 2 ? 2000 + Number(mDate[3]) : Number(mDate[3])) : new Date().getFullYear();
+    const yy = String(yyyyFull).slice(-2);
+    const hh = String(mTime[1]).padStart(2, "0");
+    const mi = String(mTime[2] || "00").padStart(2, "0");
+
+    // Mensagem padrão que seu outro serviço entende
+    const cancelText = `Pronto! Sua consulta com a Dra. Jenifer está cancelada para o dia ${dd}/${mm}/${yy} ${hh}:${mi}.`;
+
+    // 1) confirma ao paciente
+    await sendWhatsAppText({ to: from, text: cancelText });
+
+    // 2) aciona o endpoint de cancelamento já existente
+    try {
+      const cancelURLBase = process.env.CANCEL_SERVER_URL || "https://charming-growth-production.up.railway.app";
+      const endpoint = `${cancelURLBase.replace(/\/+$/,'')}/cancel-from-message`;
+      const r = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: cancelText }),
+      });
+      const jr = await r.json().catch(() => ({}));
+      console.log("[cancel-direct] sent to:", endpoint, "response:", jr);
+    } catch (e) {
+      console.error("[cancel-direct] error:", e?.message || e);
+    }
+
+    // 3) sai do modo cancelamento
+    convMem.mode = null;
+    convMem.cancelCandidates = null;
+    convMem.updatedAt = Date.now();
+    return; // não deixa cair em NENHUM fluxo de agendamento
+  }
+}
+    
+// === ATALHO: "opção N" (somente fora do modo cancelamento) ===
+try {
+  const convMem = getConversation(from);
+  if (convMem?.mode === "cancel") {
+    // em modo cancelamento, ignoramos este atalho
+  } else {
+    const txt = (userText || "").trim();
+    const mOpt =
+      txt.match(/^\s*op[cç][aã]o\s*(\d+)\s*$/i) ||
+      txt.match(/^\s*(\d+)\s*$/);
+
+    if (mOpt && convMem?.lastSlots && Array.isArray(convMem.lastSlots)) {
+      const idx = Number(mOpt[1]) - 1;
+      const chosen = convMem.lastSlots[idx];
+      if (chosen) {
+        const dt = new Date(chosen.startISO);
+        const tz = process.env.TZ || "America/Sao_Paulo";
+        const fmt = new Intl.DateTimeFormat("pt-BR", {
+          timeZone: tz, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"
+        }).formatToParts(dt).reduce((acc, p) => (acc[p.type] = p.value, acc), {});
+        const ddmmhhmm = `${fmt.day}/${fmt.month} ${fmt.hour}:${fmt.minute}`;
+        userText = `Quero agendar nesse horário: ${ddmmhhmm}`;
+      }
     }
   }
 } catch (e) {
@@ -669,7 +708,8 @@ async function handleInbound(req, res) {
     safeLog("INBOUND", req.body);
 
 // === PEDIDO DE DATA ESPECÍFICA (ex.: "tem dia 24/09?", "quero dia 24/09") ===
-try {
+if ((getConversation(from)?.mode || null) !== "cancel") {
+    try {
   const raw = String(userText || "");
   // dd/mm ou dd/mm/aa(aa) – aceita "dia 24/09", "24-09", etc.
   const mDate = raw.match(/(?:\bdia\s*)?(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?/i);
@@ -733,7 +773,7 @@ try {
 } catch (e) {
   console.error("[future-date] erro:", e?.message || e);
 }
-
+}
     const trimmed = (userText || "").trim().toLowerCase();
   
     if (["reset", "reiniciar", "reiniciar conversa", "novo atendimento"].includes(trimmed)) {
@@ -779,7 +819,8 @@ try {
 let finalAnswer = answer;
 try {
   const shouldList = /vou te enviar os hor[aá]rios livres/i.test(answer || "");
-    if (shouldList) {
+    const modeNow = getConversation(from)?.mode || null;
+if (shouldList && modeNow !== "cancel") {
     const slots = await listAvailableSlots({
       fromISO: new Date().toISOString(),
       days: 7,
@@ -809,7 +850,7 @@ finalAnswer =
 } catch (e) {
   console.error("[slots-append] erro:", e?.message || e);
 }
-
+  }
     
     // ======== DISPARO DE CANCELAMENTO (formato EXATO) ========
     // "Pronto! Sua consulta com a Dra. Jenifer está cancelada para o dia dd/mm/aa HH:MM"
