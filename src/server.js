@@ -610,16 +610,25 @@ async function handleInbound(req, res) {
   const cancelIntent = /\b(cancel(ar|amento)|desmarcar|quero\s*cancelar|remarcar|remarca[cç][aã]o)\b/i;
 
   if (cancelIntent.test(userText)) {
-    convMem.mode = "cancel";
-    convMem.cancelCandidates = null;
-    convMem.updatedAt = Date.now();
+  convMem.mode = "cancel";
+  convMem.cancelCandidates = null;
 
-    await sendWhatsAppText({
-      to: from,
-      text: 'Certo! Para cancelar, me informe a **data e horário** do agendamento (ex.: "26/09 09:00").'
-    });
-    return; // evita cair no restante do fluxo (inclui “opção N” e listagem de horários)
-  }
+  // <- NOVO: se o paciente pediu para "remarcar/reagendar", vamos voltar ao agendamento após cancelar
+  const reResched = /\b(reagend|remarc|remarcar|reagendar|marcar\s*de\s*novo)\b/i;
+  convMem.after = reResched.test(userText) ? "schedule" : null;
+
+  convMem.updatedAt = Date.now();
+
+  const intro = convMem.after === "schedule"
+    ? "Claro, para que possamos remarcar, primeiro vamos cancelar a consulta atual e, em seguida, prosseguir com o novo agendamento."
+    : "Certo! Para cancelar, me informe os dados do agendamento.";
+
+  await sendWhatsAppText({
+    to: from,
+    text: `${intro}\n\nMe informe a **data e horário** do agendamento (ex.: "26/09 09:00").`
+  });
+  return; // evita cair no restante do fluxo (inclui “opção N” e listagem de horários)
+}
 }
 // === MODO CANCELAMENTO: interpretar data/hora e cancelar ===
 {
@@ -669,12 +678,43 @@ async function handleInbound(req, res) {
       console.error("[cancel-direct] error:", e?.message || e);
     }
 
-    // 3) sai do modo cancelamento
-    convMem.mode = null;
-    convMem.cancelCandidates = null;
-    convMem.updatedAt = Date.now();
-    return; // não deixa cair em NENHUM fluxo de agendamento
+    // 3) sair do modo cancelamento e, se for reagendamento, voltar ao agendamento
+const shouldReschedule = convMem.after === "schedule";
+convMem.mode = null;
+convMem.cancelCandidates = null;
+convMem.after = null;
+convMem.updatedAt = Date.now();
+
+if (shouldReschedule) {
+  // Mostrar horários para remarcar
+  const slots = await listAvailableSlots({
+    fromISO: new Date().toISOString(),
+    days: 7,
+    limit: 10
+  });
+
+  let msg;
+  if (!slots.length) {
+    msg = "Cancelamento concluído. Vamos remarcar? No momento não encontrei horários livres nos próximos dias. Se preferir, me diga uma **data específica** (ex.: \"24/09\").";
+  } else {
+    const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`);
+    msg =
+      "Cancelamento concluído. Vamos remarcar agora. Seguem as **opções mais próximas**:\n" +
+      linhas.join("\n") +
+      "\n\nVocê pode responder com **opção N** (ex.: \"opção 3\") ou digitar **data e horário** (ex.: \"24/09 14:00\").";
+
+    // guarda as opções para o atalho "opção N"
+    const convUpd = ensureConversation(from);
+    convUpd.lastSlots = slots;
+    convUpd.updatedAt = Date.now();
   }
+
+  await sendWhatsAppText({ to: from, text: msg });
+  return; // já voltamos com o fluxo de agendamento
+}
+
+return; // cancelou, sem reagendar
+
 }
     
 // === ATALHO: "opção N" (somente fora do modo cancelamento) ===
