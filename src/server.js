@@ -260,19 +260,19 @@ const isLikelyNameLocal = (s) => {
   if (!s) return false;
   const v = String(s).trim();
 
-  if ((v.match(/\d/g) || []).length >= 1) return false;      // rejeita se tiver número
+  if ((v.match(/\d/g) || []).length >= 1) return false;
   if (v.length < 3 || v.length > 80) return false;
   if (!/^[A-Za-zÀ-ÿ'’. -]+$/.test(v)) return false;
 
   const parts = v.split(/\s+/).filter(Boolean);
   if (parts.length < 1 || parts.length > 5) return false;
 
-  // novas rejeições: linguagem comum de pedido, datas e dias da semana
-  const BAD_WORDS =
-    /\b(agendar|agendo|agenda|agendamento|marcar|marque|consulta|consultar|presencial|telemedicina|teleconsulta|quero|queria|gostaria|prefer(ia|o)|confirmar|confirmo|avaliac[aã]o|pre[\s-]?anest|anestesia|idade|telefone|motivo|enderec[oó]|data|dia|hoje|amanh[ãa]|depois|manh[ãa]|tarde|noite)\b/i;
-  if (BAD_WORDS.test(v)) return false;
+  // bloqueia frases comuns que não são nome
+  const BAD =
+    /\b(agendar|agendo|agenda|agendamento|marcar|marque|consulta|consultar|presencial|telemedicina|teleconsulta|quero|querer|vou|prefer(ia|o)|confirm(ar|o)|avaliac[aã]o|pre[\s-]?anest|anestesia|idade|telefone|motivo|endere[cç]o|data|dia|ent[aã]o|às)\b/i;
+  if (BAD.test(v)) return false;
 
-  // rejeita dias da semana e meses
+  // dias da semana e meses
   const WEEKDAYS = /\b(domingo|segunda|ter[cç]a|quarta|quinta|sexta|s[áa]bado)s?\b/i;
   const MONTHS   = /\b(janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\b/i;
   if (WEEKDAYS.test(v) || MONTHS.test(v)) return false;
