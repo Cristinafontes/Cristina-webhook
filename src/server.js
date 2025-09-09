@@ -565,6 +565,43 @@ setInterval(() => {
     if (v.updatedAt < cutoff) conversations.delete(k);
   }
 }, 30 * 60 * 1000);
+// === HELPERS: parsing de data, hora, opção e confirmação ===
+function _findBrDate(text) {
+  if (!text) return null;
+  const m = text.match(/(?:\b(?:dia|no|na|neste|nesse|nesta)\s*)?(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?\b/i);
+  if (!m) return null;
+  const dd = String(m[1]).padStart(2, "0");
+  const mm = String(m[2]).padStart(2, "0");
+  const yyyy = m[3] ? (String(m[3]).length === 2 ? 2000 + Number(m[3]) : Number(m[3])) : new Date().getFullYear();
+  return { dd, mm, yyyy, iso: `${yyyy}-${mm}-${dd}` };
+}
+
+function _findTime(text) {
+  if (!text) return null;
+  // aceita 14h, 14H, 14:00, 9:30
+  const m = text.match(/\b(\d{1,2})(?:[:hH](\d{2}))\b|\b(\d{1,2})h\b/i);
+  if (m) {
+    const hh = String(m[1] || m[3]).padStart(2, "0");
+    const mi = String(m[2] || "00").padStart(2, "0");
+    return { hh, mi };
+  }
+  return null;
+}
+
+function _optionFromText(text) {
+  if (!text) return null;
+  // emoji 2️⃣ etc.
+  const emoji = text.match(/([0-9])\uFE0F?\u20E3/);
+  if (emoji) return Number(emoji[1]);
+  // "opção 3", "opc 3", "op 3", "n3", "#3", ou só "3"
+  const m = text.trim().match(/\b(?:op(?:ç(?:a|ã)o)?|opc|opcao|opção|n(?:úm(?:ero)?)?|num|#)?\s*([1-9]|10)\b/i);
+  if (m) return Number(m[1]);
+  return null;
+}
+
+function _isAffirmative(text) {
+  return /\b(sim|pode|ok|manda|envia|envie|quero|poderia|mostra|mostre)\b/i.test(text || "");
+}
 
 // =====================
 // Inbound handler
@@ -763,34 +800,45 @@ if (shouldReschedule) {
 
 return; // cancelou, sem reagendar
   }
-} 
-// === ATALHO: "opção N" (somente fora do modo cancelamento) ===
+} // === ATALHO: "opção N" (somente fora do modo cancelamento) ===
 try {
-  const convMem = getConversation(from);
-  if (convMem?.mode === "cancel") {
-    // em modo cancelamento, ignoramos este atalho
-  } else {
-    const txt = (userText || "").trim();
-    const mOpt =
-      txt.match(/^\s*op[cç][aã]o\s*(\d+)\s*$/i) ||
-      txt.match(/^\s*(\d+)\s*$/);
+  const raw = String(userText || "");
+  const convMem = ensureConversation(from);
 
-    if (mOpt && convMem?.lastSlots && Array.isArray(convMem.lastSlots)) {
-      const idx = Number(mOpt[1]) - 1;
-      const chosen = convMem.lastSlots[idx];
-      if (chosen) {
-        const dt = new Date(chosen.startISO);
-        const tz = process.env.TZ || "America/Sao_Paulo";
-        const fmt = new Intl.DateTimeFormat("pt-BR", {
-          timeZone: tz, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"
-        }).formatToParts(dt).reduce((acc, p) => (acc[p.type] = p.value, acc), {});
-        const ddmmhhmm = `${fmt.day}/${fmt.month} ${fmt.hour}:${fmt.minute}`;
-        userText = `Quero agendar nesse horário: ${ddmmhhmm}`;
+  const picked = _optionFromText(raw);
+  const slots = Array.isArray(convMem.lastSlots) ? convMem.lastSlots : [];
+
+  if (picked && slots.length) {
+    const idx = picked - 1;
+    const chosen = slots[idx];
+
+    if (!chosen) {
+      const msg = `Não encontrei a **opção ${picked}** nesta lista. Você pode escolher outro número ou digitar *data e horário* (ex.: "24/09 14:00").`;
+      appendMessage(from, "assistant", msg);
+      await sendWhatsAppText({ to: from, text: msg });
+      return;
+    }
+
+    // usa o startISO do slot para montar o comando direto
+    if (chosen.startISO) {
+      const dt = new Date(chosen.startISO);
+      const dd = String(dt.getDate()).padStart(2, "0");
+      const mm = String(dt.getMonth() + 1).padStart(2, "0");
+      const hh = String(dt.getHours()).padStart(2, "0");
+      const mi = String(dt.getMinutes()).padStart(2, "0");
+      userText = `Quero agendar nesse horário: ${dd}/${mm} ${hh}:${mi}`;
+    } else {
+      // fallback por label (se sua função não trouxer startISO)
+      const dateByLabel = (chosen.dayLabel || "").match(/(\d{2})\/(\d{2})/);
+      const timeByLabel = (chosen.label || "").match(/(\d{2}):(\d{2})/);
+      if (dateByLabel && timeByLabel) {
+        userText = `Quero agendar nesse horário: ${dateByLabel[1]}/${dateByLabel[2]} ${timeByLabel[1]}:${timeByLabel[2]}`;
       }
     }
+    // segue o fluxo normal de criação do evento
   }
 } catch (e) {
-  console.error("[option-pick] erro:", e?.message || e);
+  console.error("[atalho-opcaoN] erro:", e?.message || e);
 }
 
     safeLog("INBOUND", req.body);
@@ -799,60 +847,83 @@ try {
 if ((getConversation(from)?.mode || null) !== "cancel") {
   try {
     const raw = String(userText || "");
-    // dd/mm ou dd/mm/aa(aa) – aceita "dia 24/09", "24-09", etc.
-    const mDate = raw.match(/(?:\bdia\s*)?(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?/i);
+    const convMem = ensureConversation(from);
 
-    // horas opcionais (ex.: 14h, 14:00, 9:30)
-    const mTime = raw.match(/\b(\d{1,2})(?:[:h](\d{2}))\b/i);
+    // 2.1) Se já havíamos perguntado "quer que eu envie alternativas próximas?"
+    if (convMem.awaitingNear && _isAffirmative(raw) && convMem.contextDate) {
+      const start = new Date(`${convMem.contextDate}T00:00:00`);
+      const slots = await listAvailableSlots({
+        fromISO: start.toISOString(),
+        days: 21,    // procura nas 3 semanas seguintes à data pedida
+        limit: 10
+      });
+      convMem.lastSlots = slots;
+      convMem.awaitingNear = false;
 
-    if (mDate) {
-      const tz = process.env.TZ || "America/Sao_Paulo";
-      const dd = String(mDate[1]).padStart(2, "0");
-      const mm = String(mDate[2]).padStart(2, "0");
-      let yyyy;
-      if (mDate[3]) {
-        const yy = String(mDate[3]);
-        yyyy = yy.length === 2 ? (2000 + Number(yy)) : Number(yy);
+      if (!slots.length) {
+        const msg = `Ainda não encontrei horários livres próximos de **${convMem.contextDate.slice(8,10)}/${convMem.contextDate.slice(5,7)}**.\n` +
+                    `Quer tentar outra data?`;
+        appendMessage(from, "assistant", msg);
+        await sendWhatsAppText({ to: from, text: msg });
       } else {
-        yyyy = new Date().getFullYear();
+        const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`);
+        const msg = `Claro, escolha uma dentre as **opções mais próximas** que seguem abaixo:\n` +
+                    linhas.join("\n") +
+                    `\n\nVocê pode responder com *opção N* (ex.: "opção 3") ou digitar *data e horário* (ex.: "24/09 14:00").`;
+        appendMessage(from, "assistant", msg);
+        await sendWhatsAppText({ to: from, text: msg });
       }
+      return;
+    }
 
-      // Se o paciente já deu hora junto (ex.: "24/09 14:00"), vira intenção direta
-      if (mTime) {
-        const hh = String(mTime[1]).padStart(2, "0");
-        const mi = String(mTime[2] || "00").padStart(2, "0");
-        userText = `Quero agendar nesse horário: ${dd}/${mm} ${hh}:${mi}`;
+    // 2.2) Interpreta "nesse/neste dia às HH:MM" usando a última data mencionada
+    const onlyTime = _findTime(raw);
+    const refersToSameDay = /\b(nesse|neste)\s+dia\b/i.test(raw);
+    if (! _findBrDate(raw) && onlyTime && refersToSameDay && convMem.contextDate) {
+      const dd = convMem.contextDate.slice(8,10);
+      const mm = convMem.contextDate.slice(5,7);
+      userText = `Quero agendar nesse horário: ${dd}/${mm} ${onlyTime.hhh ?? onlyTime.hh}:${onlyTime.mi}`;
+      // não faz return: deixa seguir o fluxo padrão de agendamento direto
+    }
+
+    // 2.3) Qualquer menção a uma DATA no texto
+    const askDate = _findBrDate(raw);
+    const askTime = _findTime(raw);
+
+    if (askDate) {
+      convMem.contextDate = askDate.iso; // salva a data de contexto
+
+      // se veio data + hora junto, força intenção direta
+      if (askTime) {
+        userText = `Quero agendar nesse horário: ${askDate.dd}/${askDate.mm} ${askTime.hh}:${askTime.mi}`;
+        // deixa seguir o fluxo normal
       } else {
-        // Só a DATA -> listar horários desse dia
-        const dayStart = new Date(`${yyyy}-${mm}-${dd}T00:00:00`);
+        // só a data -> listar horários daquele dia
+        const dayStart = new Date(`${askDate.iso}T00:00:00`);
         const slots = await listAvailableSlots({
           fromISO: dayStart.toISOString(),
           days: 1,
           limit: 10
         });
 
-        const convMem = ensureConversation(from);
         convMem.lastSlots = slots;
-        convMem.updatedAt = Date.now();
-
-        const { name } = extractPatientInfo({ payload: p, phone: from, conversation: getConversation(from) });
 
         if (!slots.length) {
-          const msg =
-            `Olá${name ? `, ${name}` : ""}! Para **${dd}/${mm}** não encontrei horários livres.\n` +
-            `Posso te enviar alternativas próximas dessa data ou procurar outra data que você prefira.`;
+          // marca que estamos aguardando autorização para enviar alternativas próximas
+          convMem.awaitingNear = true;
+          const msg = `Para **${askDate.dd}/${askDate.mm}** não encontrei horários livres.\n` +
+                      `Posso te enviar **alternativas próximas dessa data**. Quer que eu envie?`;
           appendMessage(from, "assistant", msg);
           await sendWhatsAppText({ to: from, text: msg });
         } else {
           const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`);
-          const msg =
-            `Claro, escolha uma dentre as opções para **${dd}/${mm}** que seguem abaixo:\n` +
-            linhas.join("\n") +
-            `\n\nResponda com **opção N** (ex.: "opção 3") ou digite **data e horário** (ex.: "24/09 14:00").`;
+          const msg = `Claro, escolha uma dentre as opções para **${askDate.dd}/${askDate.mm}** que seguem abaixo:\n` +
+                      linhas.join("\n") +
+                      `\n\nResponda com *opção N* (ex.: "opção 3") ou digite *data e horário* (ex.: "24/09 14:00").`;
           appendMessage(from, "assistant", msg);
           await sendWhatsAppText({ to: from, text: msg });
         }
-        return; // já respondemos com as opções do dia solicitado
+        return; // já respondemos sobre a data solicitada
       }
     }
   } catch (e) {
