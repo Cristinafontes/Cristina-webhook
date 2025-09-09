@@ -602,8 +602,42 @@ async function handleInbound(req, res) {
       });
       return;
     }
+
+// === INTENÇÃO DE CANCELAMENTO ===
+// (deixa a conversa em 'modo cancel', assim data/horário não disparam o fluxo de AGENDAMENTO)
+{
+  const convMem = ensureConversation(from);
+  const cancelIntent = /\b(cancel(ar|amento)|desmarcar|quero\s*cancelar|remarcar|remarca[cç][aã]o)\b/i;
+
+  if (cancelIntent.test(userText)) {
+    convMem.mode = "cancel";
+    convMem.cancelCandidates = null;
+    convMem.updatedAt = Date.now();
+
+    await sendWhatsAppText({
+      to: from,
+      text: 'Certo! Para cancelar, me informe a **data e horário** do agendamento (ex.: "26/09 09:00").'
+    });
+    return; // evita cair no restante do fluxo (inclui “opção N” e listagem de horários)
+  }
+}
+
+    
 // === ATALHO: se o paciente responder "opção 3" (ou só "3"), injeta a data/hora do slot escolhido ===
-try {
+
+    try {
+  const mode = getConversation(from)?.mode;
+  if (mode === "cancel") {
+    // em modo cancelamento não transformamos "3" em escolha de slot
+  } else {
+    // ... (deixe aqui o conteúdo existente do atalho "opção N")
+  }
+} catch (e) {
+  console.error("[option-pick] erro:", e?.message || e);
+}
+
+    
+    try {
   const convMem = getConversation(from);
   const txt = (userText || "").trim();
 
@@ -633,54 +667,6 @@ try {
 }
 
     safeLog("INBOUND", req.body);
-
-    // === PEDIDO DE DATA ESPECÍFICA (ex.: "tem dia 13/09?", "quero 24/09 14:00") ===
-try {
-  const raw = String(userText || "");
-  // dd/mm ou dd/mm/aa(aa)
-  const mDate = raw.match(/(?:\bdia\s*)?(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?/i);
-  // hora opcional: 14h, 14:00, 9:30
-  const mTime = raw.match(/\b(\d{1,2})(?:[:h](\d{2}))\b/i);
-
-  if (mDate) {
-    let dd = String(mDate[1]).padStart(2, "0");
-    let mm = String(mDate[2]).padStart(2, "0");
-    let yyyy = mDate[3] ? (String(mDate[3]).length === 2 ? 2000 + Number(mDate[3]) : Number(mDate[3])) : new Date().getFullYear();
-
-    if (mTime) {
-      const hh = String(mTime[1]).padStart(2, "0");
-      const mi = String(mTime[2] || "00").padStart(2, "0");
-      userText = `Quero agendar nesse horário: ${dd}/${mm} ${hh}:${mi}`;
-      // segue fluxo normal
-    } else {
-      const dayStart = new Date(`${yyyy}-${mm}-${dd}T00:00:00`);
-      const slots = await listAvailableSlots({ fromISO: dayStart.toISOString(), days: 1, limit: 10 });
-
-      const convMem = ensureConversation(from);
-      convMem.lastSlots = slots;
-      convMem.updatedAt = Date.now();
-
-      if (!slots.length) {
-        const msg =
-          `Para **${dd}/${mm}** não encontrei horários livres.\n` +
-          `Posso te enviar alternativas próximas dessa data ou procurar outra data que você prefira.`;
-        appendMessage(from, "assistant", msg);
-        await sendWhatsAppText({ to: from, text: msg });
-      } else {
-        const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`);
-        const msg =
-          `Claro, escolha uma dentre as opções para **${dd}/${mm}** que seguem abaixo:\n` +
-          linhas.join("\n") +
-          `\n\nResponda com **opção N** (ex.: "opção 3") ou digite **data e horário** (ex.: "24/09 14:00").`;
-        appendMessage(from, "assistant", msg);
-        await sendWhatsAppText({ to: from, text: msg });
-      }
-      return; // já respondido, não passa para a IA
-    }
-  }
-} catch (e) {
-  console.error("[future-date] erro:", e?.message || e);
-}
 
 // === PEDIDO DE DATA ESPECÍFICA (ex.: "tem dia 24/09?", "quero dia 24/09") ===
 try {
@@ -735,9 +721,9 @@ try {
       } else {
         const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`);
         const msg =
-          `Claro${name ? `, ${name}` : ""}! Para **${dd}/${mm}** tenho estas opções:\n` +
-          linhas.join("\n") +
-          `\n\nResponda com **opção N** (ex.: "opção 3") ou digite a data e horário desejados (ex.: "24/09 14:00").`;
+          `Claro, escolha uma dentre as opções para **${dd}/${mm}** que seguem abaixo:\n` +
+            linhas.join("\n") +
+            `\n\nResponda com **opção N** (ex.: "opção 3") ou digite **data e horário** (ex.: "24/09 14:00").`;
         appendMessage(from, "assistant", msg);
         await sendWhatsAppText({ to: from, text: msg });
       }
