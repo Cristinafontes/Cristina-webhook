@@ -60,3 +60,78 @@ export async function createCalendarEvent({
   });
   return res?.data;
 }
+
+// Busca eventos por telefone (em description) e filtra por nome
+export async function findPatientEvents({
+  calendarId,
+  phone,
+  name,
+  daysBack = 30,
+  daysAhead = 180,
+}) {
+  const auth = getOAuth2Client();
+  const calendar = google.calendar({ version: "v3", auth });
+  const calId = calendarId || process.env.GOOGLE_CALENDAR_ID || "primary";
+
+  const now = new Date();
+  const timeMin = new Date(now.getTime() - daysBack * 86400000).toISOString();
+  const timeMax = new Date(now.getTime() + daysAhead * 86400000).toISOString();
+
+  // busca pelo telefone (que gravamos em description como #patient_phone:<número>)
+  const q = String(phone || "").trim();
+  const res = await calendar.events.list({
+    calendarId: calId,
+    singleEvents: true,
+    showDeleted: false,
+    orderBy: "startTime",
+    timeMin,
+    timeMax,
+    q,
+    maxResults: 50,
+  });
+
+  const items = res?.data?.items || [];
+  const nameNorm = String(name || "").trim().toLowerCase();
+
+  const filtered = items.filter((ev) => {
+    const desc = (ev.description || "").toLowerCase();
+    const sum = (ev.summary || "").toLowerCase();
+    const hasPhoneTag =
+      /#patient_phone:\d+/.test(desc) || (q && desc.includes(q));
+    const nameOk = nameNorm ? desc.includes(nameNorm) || sum.includes(nameNorm) : true;
+    return hasPhoneTag && nameOk && ev.status !== "cancelled";
+  });
+
+  return filtered.map((ev) => {
+    const startISO =
+      ev.start?.dateTime || (ev.start?.date ? `${ev.start.date}T00:00:00` : null);
+    const dt = startISO ? new Date(startISO) : null;
+    const dd = dt ? String(dt.getDate()).padStart(2, "0") : "";
+    const mm = dt ? String(dt.getMonth() + 1).padStart(2, "0") : "";
+    const hh = dt ? String(dt.getHours()).padStart(2, "0") : "";
+    const mi = dt ? String(dt.getMinutes()).padStart(2, "0") : "";
+    return {
+      id: ev.id,
+      summary: ev.summary || "",
+      description: ev.description || "",
+      startISO,
+      endISO: ev.end?.dateTime || null,
+      dayLabel: dt ? `${dd}/${mm}` : "",
+      timeLabel: dt ? `${hh}:${mi}` : "",
+    };
+  });
+}
+
+// Cancela um evento pelo ID (status = "cancelled")
+export async function cancelCalendarEvent({ calendarId, eventId }) {
+  const auth = getOAuth2Client();
+  const calendar = google.calendar({ version: "v3", auth });
+  const calId = calendarId || process.env.GOOGLE_CALENDAR_ID || "primary";
+
+  await calendar.events.patch({
+    calendarId: calId,
+    eventId,
+    resource: { status: "cancelled" },
+    sendUpdates: "all", // notifica convidados (opcional)
+  });
+}
