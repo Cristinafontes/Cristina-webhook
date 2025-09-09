@@ -12,7 +12,7 @@ import { sendWhatsAppText } from "./gupshup.js";
 import { safeLog } from "./redact.js";
 
 // >>> CALENDÁRIO (somente nossas funções)
-import { createCalendarEvent } from "./google.esm.js";
+import { createCalendarEvent,findPatientEvents,cancelCalendarEvent } from "./google.esm.js";
 import { parseCandidateDateTime } from "./utils.esm.js";
 import { isSlotBlockedOrBusy } from "./availability.esm.js";
 import { listAvailableSlots } from "./slots.esm.js";
@@ -604,195 +604,187 @@ async function handleInbound(req, res) {
     }
 
 // === INTENÇÃO DE CANCELAMENTO / REAGENDAMENTO ===
+// (entra em modo "cancel" ou "reschedule"; pede só telefone + nome, busca o evento e prossegue)
 {
   const convMem = ensureConversation(from);
 
-  // Reagendar / remarcar
-  const rescheduleIntent =
-    /\b(reagend(ar|amento)|remarc(ar|ação)|mudar\s*(o\s*)?hor[áa]rio|trocar\s*(o\s*)?hor[áa]rio|adiar)\b/i;
-
-  // Cancelar puro
-  const cancelIntent =
-    /\b(cancel(ar|amento)|desmarcar|quero\s*cancelar)\b/i;
-
-  if (rescheduleIntent.test(userText)) {
-    convMem.mode = "cancel";
-    convMem.after = "schedule";            // <- sinaliza "voltar para agendar"
-    convMem.cancelCandidates = null;
-    convMem.updatedAt = Date.now();
-
-    const msg =
-      "Claro, para que possamos reagendar sua consulta, " +
-      "primeiro vamos cancelar a consulta previamente agendada e, " +
-      "em seguida, prosseguir com o agendamento da nova. " +
-      'Por favor, me informe a **data e horário** do seu agendamento atual (ex.: "26/09 09:00").';
-    await sendWhatsAppText({ to: from, text: msg });
-    return;
+  // detectar entrada no modo
+  if (/\b(reagend|remarc|cancel)\w*/i.test(userText)) {
+    convMem.mode = /\b(reagend|remarc)\w*/i.test(userText) ? "reschedule" : "cancel";
+    convMem.cancelData = { phone: null, name: null };
+    convMem.pickEventMode = null;
   }
 
-  if (cancelIntent.test(userText)) {
-    convMem.mode = "cancel";
-    convMem.after = null;                   // cancelamento simples
-    convMem.cancelCandidates = null;
-    convMem.updatedAt = Date.now();
-
-    await sendWhatsAppText({
-      to: from,
-      text: 'Certo! Para cancelar, me informe a **data e horário** do agendamento (ex.: "26/09 09:00").'
-    });
-    return;
-  }
-}
-
-    // === MODO CANCELAMENTO: interpretar data/hora e cancelar ===
-{
-  const convMem = getConversation(from);
-  if (convMem?.mode === "cancel") {
-    const txt = String(userText || "");
-
-    // dd/mm[/aa] + hora opcional ("9", "09", "9h", "9:00")
-    const mDate = txt.match(/(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?/);
-    const mTime = txt.match(/\b(\d{1,2})(?::|h)(\d{2})\b/);
-
-
-    if (!mDate) {
-      await sendWhatsAppText({ to: from, text: 'Para cancelar, me envie a **data** (ex.: "26/09") e, se possível, o **horário** (ex.: "09:00").' });
-      return;
-    }
-    if (!mTime) {
-      await sendWhatsAppText({ to: from, text: 'Perfeito! Me diga também o **horário** (ex.: "09:00") desse agendamento para eu localizar e cancelar.' });
-      return;
-    }
-
-    const dd = String(mDate[1]).padStart(2, "0");
-    const mm = String(mDate[2]).padStart(2, "0");
-    const yyyyFull = mDate[3] ? (String(mDate[3]).length === 2 ? 2000 + Number(mDate[3]) : Number(mDate[3])) : new Date().getFullYear();
-    const yy = String(yyyyFull).slice(-2);
-    const hh = String(mTime[1]).padStart(2, "0");
-    const mi = String(mTime[2] || "00").padStart(2, "0");
-
-    // Mensagem padrão que seu outro serviço entende
-    const cancelText = `Pronto! Sua consulta com a Dra. Jenifer está cancelada para o dia ${dd}/${mm}/${yy} ${hh}:${mi}.`;
-
-    // 1) confirma ao paciente
-    await sendWhatsAppText({ to: from, text: cancelText });
-
-    // 2) aciona o endpoint de cancelamento já existente
+  if (convMem.mode === "cancel" || convMem.mode === "reschedule") {
     try {
-      const cancelURLBase = process.env.CANCEL_SERVER_URL || "https://charming-growth-production.up.railway.app";
-      const endpoint = `${cancelURLBase.replace(/\/+$/,'')}/cancel-from-message`;
-      const r = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: cancelText }),
+      const normPhone = (t) => String(t || "").replace(/[^\d]/g, "");
+      const guessPhone = (t) => {
+        const only = normPhone(t);
+        return (only.length >= 10 && only.length <= 13) ? only : null;
+      };
+
+      const data = (convMem.cancelData ||= { phone: null, name: null });
+
+      // captura telefone desta mensagem, se vier
+      if (!data.phone) {
+        const pFound = guessPhone(userText);
+        if (pFound) data.phone = pFound;
+      }
+      // tenta capturar nome (filtra palavras comuns)
+      if (!data.name) {
+        const maybeName = (userText || "")
+          .replace(/#\w+:[^\s]+/g, "")
+          .replace(/[0-9\-\+\(\)]/g, "")
+          .replace(/\b(cancel(ar|amento)|reagend(ar|amento)|remarc(ar|ação)|consulta|telefone|celular)\b/gi, "")
+          .trim();
+        if (/\p{L}/u.test(maybeName) && maybeName.length >= 3) data.name = maybeName;
+      }
+
+      if (!data.phone) {
+        await sendWhatsAppText({ to: from, text: "Para **cancelar/reagendar**, me informe o **telefone do paciente** (apenas números)." });
+        return;
+      }
+      if (!data.name) {
+        await sendWhatsAppText({ to: from, text: "Perfeito. Agora me diga o **nome completo do paciente**." });
+        return;
+      }
+
+      // temos telefone + nome -> busca eventos
+      const matches = await findPatientEvents({
+        calendarId: process.env.GOOGLE_CALENDAR_ID || "primary",
+        phone: data.phone,
+        name: data.name,
+        daysBack: 120,
+        daysAhead: 365
       });
-      const jr = await r.json().catch(() => ({}));
-      console.log("[cancel-direct] sent to:", endpoint, "response:", jr);
-    } catch (e) {
-      console.error("[cancel-direct] error:", e?.message || e);
+
+      if (!matches.length) {
+        await sendWhatsAppText({
+          to: from,
+          text: "Não localizei nenhum agendamento com esse **telefone/nome**. Pode me informar uma **data aproximada** (ex.: 24/09) para eu buscar novamente?"
+        });
+        return;
+      }
+
+      if (matches.length === 1) {
+        const ev = matches[0];
+        if (convMem.mode === "cancel") {
+          await cancelCalendarEvent({ calendarId: process.env.GOOGLE_CALENDAR_ID || "primary", eventId: ev.id });
+          await sendWhatsAppText({ to: from, text: `✅ Cancelado: ${ev.dayLabel} ${ev.timeLabel} — ${ev.summary}` });
+          convMem.mode = null;
+          convMem.cancelData = null;
+          return;
+        } else {
+          // reagendar: cancela e ancora sugestões perto da data original
+          await cancelCalendarEvent({ calendarId: process.env.GOOGLE_CALENDAR_ID || "primary", eventId: ev.id });
+          convMem.mode = null;
+          convMem.cancelData = null;
+          convMem.contextDate = ev.startISO?.slice(0,10);
+          await sendWhatsAppText({
+            to: from,
+            text: "Cancelamento concluído. Vamos **remarcar** agora. Informe a **nova data e horário** (ex.: 30/09 14:00) ou diga **'próximos horários'**."
+          });
+          return;
+        }
+      }
+
+      // vários resultados -> lista para escolher com "opção N"
+      convMem.pickEventMode = convMem.mode; // "cancel" ou "reschedule"
+      convMem.lastSlots = matches.map(m => ({
+        dayLabel: m.dayLabel,
+        label: m.timeLabel,
+        startISO: m.startISO,
+        meta: { eventId: m.id, summary: m.summary }
+      }));
+
+      const linhas = matches.map((m, i) => `${i + 1}) ${m.dayLabel} ${m.timeLabel} — ${m.summary}`);
+      const msg = "Encontrei mais de um agendamento. Por favor, responda com *opção N* (ex.: \"opção 2\"):\n" + linhas.join("\n");
+      await sendWhatsAppText({ to: from, text: msg });
+      return;
+
+    } catch (err) {
+      console.error("[cancel/reschedule] erro:", err?.response?.data || err);
+      await sendWhatsAppText({ to: from, text: "Tive um problema ao procurar o agendamento. Pode tentar novamente em instantes?" });
+      return;
     }
-
-    // 3) sair do modo cancelamento e, se for reagendamento, voltar ao agendamento
-    // 3) sair do modo cancelamento e, se for reagendamento, voltar ao agendamento
-if (convMem.after === "schedule") {
-  // limpa o estado de cancelamento
-  convMem.mode = null;
-  convMem.after = null;
-
-  // lista horários para remarcar
-  const slots = await listAvailableSlots({
-    fromISO: new Date().toISOString(),
-    days: 7,
-    limit: 10,
-  });
-
-  let msg;
-  if (!slots.length) {
-    msg = "Cancelamento concluído. Vamos remarcar? " +
-          "No momento não encontrei horários livres nos próximos dias. " +
-          'Se preferir, me diga uma **data específica** (ex.: "24/09").';
-  } else {
-    const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`).join("\n");
-    msg = "Cancelamento concluído. Vamos remarcar agora. Seguem as **opções mais próximas**:\n" +
-          linhas +
-          '\n\nVocê pode responder com **opção N** (ex.: "opção 3") ' +
-          'ou digitar **data e horário** (ex.: "24/09 14:00").';
-
-    // habilita "opção N"
-    convMem.lastSlots = slots;
-    convMem.updatedAt = Date.now();
   }
-
-  await sendWhatsAppText({ to: from, text: msg });
-  return; // não deixa cair em outras regras
 }
-
-const shouldReschedule = convMem.after === "schedule";
-convMem.mode = null;
-convMem.cancelCandidates = null;
-convMem.after = null;
-convMem.updatedAt = Date.now();
-
-if (shouldReschedule) {
-  // Mostrar horários para remarcar
-  const slots = await listAvailableSlots({
-    fromISO: new Date().toISOString(),
-    days: 7,
-    limit: 10
-  });
-
-  let msg;
-  if (!slots.length) {
-    msg = "Cancelamento concluído. Vamos remarcar? No momento não encontrei horários livres nos próximos dias. Se preferir, me diga uma **data específica** (ex.: \"24/09\").";
-  } else {
-    const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`);
-    msg =
-      "Cancelamento concluído. Vamos remarcar agora. Seguem as **opções mais próximas**:\n" +
-      linhas.join("\n") +
-      "\n\nVocê pode responder com **opção N** (ex.: \"opção 3\") ou digitar **data e horário** (ex.: \"24/09 14:00\").";
-
-    // guarda as opções para o atalho "opção N"
-    const convUpd = ensureConversation(from);
-    convUpd.lastSlots = slots;
-    convUpd.updatedAt = Date.now();
-  }
-
-  await sendWhatsAppText({ to: from, text: msg });
-  return; // já voltamos com o fluxo de agendamento
-}
-
-return; // cancelou, sem reagendar
-  }
-} 
 // === ATALHO: "opção N" (somente fora do modo cancelamento) ===
 try {
-  const convMem = getConversation(from);
-  if (convMem?.mode === "cancel") {
-    // em modo cancelamento, ignoramos este atalho
-  } else {
-    const txt = (userText || "").trim();
-    const mOpt =
-      txt.match(/^\s*op[cç][aã]o\s*(\d+)\s*$/i) ||
-      txt.match(/^\s*(\d+)\s*$/);
+  const raw = String(userText || "");
+  const convMem = ensureConversation(from);
 
-    if (mOpt && convMem?.lastSlots && Array.isArray(convMem.lastSlots)) {
-      const idx = Number(mOpt[1]) - 1;
-      const chosen = convMem.lastSlots[idx];
-      if (chosen) {
-        const dt = new Date(chosen.startISO);
-        const tz = process.env.TZ || "America/Sao_Paulo";
-        const fmt = new Intl.DateTimeFormat("pt-BR", {
-          timeZone: tz, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"
-        }).formatToParts(dt).reduce((acc, p) => (acc[p.type] = p.value, acc), {});
-        const ddmmhhmm = `${fmt.day}/${fmt.month} ${fmt.hour}:${fmt.minute}`;
-        userText = `Quero agendar nesse horário: ${ddmmhhmm}`;
+  // PRIORIDADE: escolhendo qual evento cancelar/reagendar
+  if (convMem.pickEventMode && Array.isArray(convMem.lastSlots) && convMem.lastSlots.length) {
+    const pickedNum = _optionFromText(raw);
+    if (pickedNum) {
+      const idx = pickedNum - 1;
+      const item = convMem.lastSlots[idx];
+      if (!item?.meta?.eventId) {
+        await sendWhatsAppText({ to: from, text: `Não encontrei a **opção ${pickedNum}** nessa lista. Pode tentar outro número?` });
+        return;
+      }
+      const evId = item.meta.eventId;
+
+      if (convMem.pickEventMode === "cancel") {
+        await cancelCalendarEvent({ calendarId: process.env.GOOGLE_CALENDAR_ID || "primary", eventId: evId });
+        await sendWhatsAppText({ to: from, text: `✅ Cancelado: ${item.dayLabel} ${item.label} — ${item.meta.summary || ""}` });
+        convMem.pickEventMode = null;
+        convMem.lastSlots = null;
+        convMem.mode = null;
+        return;
+      } else {
+        await cancelCalendarEvent({ calendarId: process.env.GOOGLE_CALENDAR_ID || "primary", eventId: evId });
+        convMem.pickEventMode = null;
+        convMem.lastSlots = null;
+        convMem.mode = null;
+        convMem.contextDate = item.startISO?.slice(0,10);
+        await sendWhatsAppText({
+          to: from,
+          text: "Cancelado. Vamos **remarcar**: informe a **nova data e horário** (ex.: 30/09 14:00) ou diga **'próximos horários'**."
+        });
+        return;
       }
     }
+    // se não veio número, segue para outros atalhos
+  }
+
+  // (resto do atalho para “opção N” da listagem de horários normais)
+  const picked = _optionFromText(raw);
+  const slots = Array.isArray(convMem.lastSlots) ? convMem.lastSlots : [];
+
+  if (picked && slots.length) {
+    const idx = picked - 1;
+    const chosen = slots[idx];
+
+    if (!chosen) {
+      const msg = `Não encontrei a **opção ${picked}** nesta lista. Você pode escolher outro número ou digitar *data e horário* (ex.: "24/09 14:00").`;
+      appendMessage(from, "assistant", msg);
+      await sendWhatsAppText({ to: from, text: msg });
+      return;
+    }
+
+    // usa o startISO do slot para montar o comando direto
+    if (chosen.startISO) {
+      const dt = new Date(chosen.startISO);
+      const dd = String(dt.getDate()).padStart(2, "0");
+      const mm = String(dt.getMonth() + 1).padStart(2, "0");
+      const hh = String(dt.getHours()).padStart(2, "0");
+      const mi = String(dt.getMinutes()).padStart(2, "0");
+      userText = `Quero agendar nesse horário: ${dd}/${mm} ${hh}:${mi}`;
+    } else {
+      // fallback por label
+      const dateByLabel = (chosen.dayLabel || "").match(/(\d{2})\/(\d{2})/);
+      const timeByLabel = (chosen.label || "").match(/(\d{2}):(\d{2})/);
+      if (dateByLabel && timeByLabel) {
+        userText = `Quero agendar nesse horário: ${dateByLabel[1]}/${dateByLabel[2]} ${timeByLabel[1]}:${timeByLabel[2]}`;
+      }
+    }
+    // deixa seguir para o fluxo normal de criação do evento
   }
 } catch (e) {
-  console.error("[option-pick] erro:", e?.message || e);
+  console.error("[atalho-opcaoN] erro:", e?.message || e);
 }
-
     safeLog("INBOUND", req.body);
 
 // === PEDIDO DE DATA ESPECÍFICA (ex.: "tem dia 24/09?", "quero dia 24/09") ===
@@ -1043,16 +1035,38 @@ if (busy) {
   await sendWhatsAppText({ to: from, text: msg });
   return; // não cria evento, sai daqui
 }
+// --- [A] ANTES do createCalendarEvent: anexa tags e props privadas ---
+const _normPhone = (p) => String(p || "").replace(/[^\d]/g, "");
+const { name: patientName } = extractPatientInfo({
+  payload: p,
+  phone: from,
+  conversation: getConversation(from)
+});
+const patientPhone = _normPhone(from);
 
+// tags no description (permite achar via busca 'q')
+const metaTags = `#cristina #patient_phone:${patientPhone} #patient_name:${patientName || ""}`.trim();
+description = [description || "", metaTags].filter(Boolean).join("\n");
+
+// propriedades privadas (opcional, mas recomendado)
+const extendedProperties = {
+  private: {
+    created_by: "cristina",
+    patient_phone: patientPhone,
+    patient_name: String(patientName || "")
+  }
+};
+
+// --- chamada ajustada ---
 await createCalendarEvent({
   summary,
   description,
   startISO,
   endISO,
-  attendees: [], // inclua e-mails só com consentimento
-  location: process.env.CLINIC_ADDRESS || "Clínica",
+  location,
+  calendarId: process.env.GOOGLE_CALENDAR_ID || "primary",
+  extendedProperties,           // << NOVO
 });
-
           } else {
             console.warn("Confirmação detectada, mas não consegui interpretar data/hora:", textForParser);
           }
