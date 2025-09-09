@@ -97,6 +97,7 @@ export async function listAvailableSlots({ fromISO, days=7, limit=100 } = {}){
     const day = new Date(from.getTime() + i*24*60*60*1000);
 
     const dow = getDowTZ(day);
+    if (dow === 0 || dow === 6) continue;
     const ranges = WORKING_HOURS[String(dow)];
     if (!ranges || !ranges.length) continue;
 
