@@ -28,33 +28,35 @@ export async function pingGoogle() {
   return !!token;
 }
 
-export async function createCalendarEvent({ summary, description, startISO, endISO, attendees = [], location }) {
+export async function createCalendarEvent({
+  summary,
+  description,
+  startISO,
+  endISO,
+  attendees = [],
+  location,
+  calendarId: calendarIdParam,      // aceita vir de fora
+  extendedProperties,               // << NOVO
+}) {
   const auth = getOAuth2Client();
   const calendar = google.calendar({ version: "v3", auth });
-  const calendarId = process.env.GOOGLE_CALENDAR_ID || "primary";
+  const calendarId = calendarIdParam || process.env.GOOGLE_CALENDAR_ID || "primary";
 
   const event = {
     summary,
     description,
-    start: { dateTime: startISO },
-    end: { dateTime: endISO },
-    attendees,
     location,
-    reminders: {
-      useDefault: false,
-      overrides: [
-        { method: "email", minutes: 24 * 60 },
-        { method: "popup", minutes: 60 },
-      ],
-    },
-    transparency: "opaque",
-    visibility: "private",
+    start: { dateTime: startISO },
+    end:   { dateTime: endISO },
+    attendees,
+    reminders: { useDefault: false },
+    ...(extendedProperties ? { extendedProperties } : {}), // << NOVO
   };
 
-  const { data } = await calendar.events.insert({
+  const res = await calendar.events.insert({
     calendarId,
-    requestBody: event,
+    resource: event,
     sendUpdates: "all",
   });
-  return data;
+  return res?.data;
 }
