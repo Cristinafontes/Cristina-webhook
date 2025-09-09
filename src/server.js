@@ -629,7 +629,8 @@ async function handleInbound(req, res) {
 
     // dd/mm[/aa] + hora opcional ("9", "09", "9h", "9:00")
     const mDate = txt.match(/(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?/);
-    const mTime = txt.match(/\b(\d{1,2})(?:[:h](\d{2}))?\b/);
+    const mTime = txt.match(/\b(\d{1,2})(?::|h)(\d{2})\b/);
+
 
     if (!mDate) {
       await sendWhatsAppText({ to: from, text: 'Para cancelar, me envie a **data** (ex.: "26/09") e, se possível, o **horário** (ex.: "09:00").' });
@@ -855,7 +856,7 @@ finalAnswer =
     // "Pronto! Sua consulta com a Dra. Jenifer está cancelada para o dia dd/mm/aa HH:MM"
     try {
      const cancelRegex =
-  /^Pronto!\s*Sua consulta com a Dra\.?\s*Jenifer está cancelada para o dia\s+(\d{2})\/(\d{2})(?:\/(\d{2}))?\s+(\d{1,2}:\d{2})\.?$/i;
+       /^Pronto!\s*Sua consulta com a Dra\.?\s*Jenifer está cancelada para o dia\s+(\d{2})\/(\d{2})(?:\/(\d{2}))?\s+(\d{1,2}:\d{2})\.?$/i;
       if (answer && cancelRegex.test(answer)) {
         const cancelURLBase = process.env.CANCEL_SERVER_URL || "https://charming-growth-production.up.railway.app";
         const endpoint = `${cancelURLBase.replace(/\/+$/,'')}/cancel-from-message`;
