@@ -1062,12 +1062,12 @@ await createCalendarEvent({
           console.error("Erro ao criar evento no Google Calendar:", e?.response?.data || e);
         }
       }
-    }
-    // ======== FIM DA REGRA DE CONFIRMAÇÃO ========
+    }// ======== FIM DA REGRA DE CONFIRMAÇÃO ========
 
-    // Memória + resposta ao paciente
-    appendMessage(from, "user", userText);
-   if (finalAnswer) {
+// Memória + resposta ao paciente
+appendMessage(from, "user", userText);
+
+if (finalAnswer) {
   // remove frases indesejadas da resposta antes de enviar
   finalAnswer = finalAnswer
     .replace(/vou verificar a disponibilidade.*?(confirmo já)?/gi, "")
@@ -1083,9 +1083,12 @@ await createCalendarEvent({
   appendMessage(from, "assistant", finalAnswer);
   await sendWhatsAppText({ to: from, text: finalAnswer });
 }
-  } catch (err) {
-    console.error("ERR inbound:", err?.response?.data || err);
-  }
+
+// <-- FECHA o try global que começou no início do handleInbound()
+} catch (err) {
+  console.error("ERR inbound:", err?.response?.data || err);
+}
+// <-- FECHA a função handleInbound
 }
 
 // =====================
