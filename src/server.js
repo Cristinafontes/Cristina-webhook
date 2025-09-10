@@ -656,8 +656,17 @@ try {
       timeZone: tz, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"
     }).formatToParts(dt).reduce((a,p) => (a[p.type]=p.value, a), {});
     userText = `Quero agendar nesse horário: ${parts.day}/${parts.month} ${parts.hour}:${parts.minute}`;
-    // Marcar que já escolheu um slot
-    convMem.lastSlots = null;
+
+// Marcar que o paciente acabou de escolher um slot da lista
+const cm = ensureConversation(from);
+cm.justPickedSlot = true;
+
+// Limpa a lista atual para não re-listar
+cm.lastSlots = null;
+
+// IMPORTANTE: não dê return aqui. Deixe o fluxo seguir.
+// O userText já está no formato que o seu código de criação entende.
+
   }
 } catch (e) {
   console.error("[option-pick global] erro:", e?.message || e);
