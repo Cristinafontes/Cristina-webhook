@@ -656,7 +656,8 @@ try {
       timeZone: tz, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"
     }).formatToParts(dt).reduce((a,p) => (a[p.type]=p.value, a), {});
     userText = `Quero agendar nesse horário: ${parts.day}/${parts.month} ${parts.hour}:${parts.minute}`;
-    // segue fluxo normal
+    // Marcar que já escolheu um slot
+    convMem.lastSlots = null;
   }
 } catch (e) {
   console.error("[option-pick global] erro:", e?.message || e);
