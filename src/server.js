@@ -1066,12 +1066,18 @@ const { name, phoneFormatted, reason, modality } = extractPatientInfo({
 const summary = `Consulta (${modality}) — ${name} — ${reason} — ${phoneFormatted}`;
 
 // Descrição com modalidade
+// Tags de máquina para facilitar a busca por telefone/nome
+const phoneDigits = String(rawPhone || "").replace(/\D/g, "");
+const nameTag = String(name || "").trim().toLowerCase();
+
 const description = [
   `Paciente: ${name}`,
   `Telefone: ${phoneFormatted}`,
   `Motivo: ${reason}`,
   `Modalidade: ${modality}`,
   `Origem: WhatsApp (Cristina)`,
+  `#patient_phone:${phoneDigits}`,
+  `#patient_name:${nameTag}`,
 ].join("\n");
 
 // Opcional: também refletir no "Local"
