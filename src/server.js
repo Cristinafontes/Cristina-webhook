@@ -604,121 +604,172 @@ async function handleInbound(req, res) {
     }
 
 // === INTENÇÃO DE CANCELAMENTO / REAGENDAMENTO ===
-// === INTENÇÃO DE CANCELAMENTO / REAGENDAMENTO ===
 {
-  const rescheduleIntent = /\b(reagend|remarc|adiar|mudar horário)\b/i;
-  const cancelIntent     = /\b(cancel|desmarc)\b/i;
+  const rescheduleIntent = /\b(reagend(ar|amento)|remarc(ar|ação)|adiar|mudar\s*o?\s*hor[áa]rio)\b/i;
+  const cancelIntent     = /\b(cancel(ar|amento)|desmarcar)\b/i;
 
+  // 1) Entrada no fluxo
   if (rescheduleIntent.test(userText) || cancelIntent.test(userText)) {
-    ensureConversation(from).cancel = { step: "collect_info", after: rescheduleIntent.test(userText) };
+    const conv = ensureConversation(from);
+    conv.cancel = { step: "collect_info", after: rescheduleIntent.test(userText) ? "schedule" : null };
     await sendWhatsAppText({
       to: from,
       text:
-        "Claro! Para localizar sua consulta, por favor me informe em **uma única mensagem**:\n" +
-        "👉 Seu **nome completo**,\n" +
-        "👉 Seu **telefone**, e\n" +
-        "👉 A **data e horário da consulta**.\n\n" +
-        "Exemplo: *Ana Luiza Duarte, 11 91234-5678, 26/09 às 09:00*\n\n" +
-        });
+        "Claro! Para localizar sua consulta, me envie **em UMA mensagem**:\n" +
+        "• Seu **nome completo**\n" +
+        "• Seu **telefone**\n" +
+        "• A **data e o horário** da consulta\n\n" +
+        "Ex.: *Ana Luiza Duarte, 11 91234-5678, 26/09 às 09:00*\n\n" +
+    });
     return;
   }
 
-  // Já no fluxo
-  const convMem = getConversation(from);
-  if (convMem?.cancel?.step === "collect_info") {
-    // Extrai dados possíveis
+  const conv = getConversation(from);
+
+  // 2) Coleta tudo numa mensagem e busca
+  if (conv?.cancel?.step === "collect_info") {
     const phone = extractPhoneFromText(userText);
-    const { name } = extractPatientInfo({ payload: p, phone: from, conversation: convMem });
+    const { name } = extractPatientInfo({ payload: p, phone: from, conversation: conv }) || {};
     const mDate = userText.match(/(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?/);
     const mTime = userText.match(/\b(\d{1,2})(?::|h)(\d{2})\b/);
 
+    // Monta filtros flexíveis
     const searchOpts = { daysBack: 365, daysAhead: 365 };
     if (phone) searchOpts.phone = phone;
-    if (name)  searchOpts.name = name;
+    if (name)  searchOpts.name  = name;
 
-    const events = await findPatientEvents(searchOpts);
+    let events = await findPatientEvents(searchOpts);
     let candidates = events;
 
-    // Se data/hora presente, filtra
+    // Se veio data/hora, filtra “por perto” (±120 min) no mesmo dia
     if (mDate && mTime) {
       const dd = String(mDate[1]).padStart(2,"0");
       const mm = String(mDate[2]).padStart(2,"0");
-      const yyyy = mDate[3] ? (mDate[3].length === 2 ? 2000+Number(mDate[3]) : Number(mDate[3])) : new Date().getFullYear();
+      const yyyy = mDate[3] ? (String(mDate[3]).length === 2 ? 2000 + Number(mDate[3]) : Number(mDate[3])) : new Date().getFullYear();
       const hh = String(mTime[1]).padStart(2,"0");
       const mi = String(mTime[2]).padStart(2,"0");
       const target = new Date(`${yyyy}-${mm}-${dd}T${hh}:${mi}:00`);
-      candidates = candidates.filter(ev => {
-        const evDt = new Date(ev.startISO);
-        const sameDay = evDt.getDate()===+dd && evDt.getMonth()+1===+mm;
-        const diff = Math.abs(evDt-target)/60000;
-        return sameDay && diff<=120;
-      });
-      if (!candidates.length) candidates = events; // fallback
+
+      const sameDayClose = (ev) => {
+        if (!ev.startISO) return false;
+        const dt = new Date(ev.startISO);
+        const sameDay = dt.getDate() === Number(dd) && (dt.getMonth() + 1) === Number(mm) && dt.getFullYear() === Number(yyyy);
+        const diff = Math.abs(dt - target) / 60000;
+        return sameDay && diff <= 120;
+      };
+
+      const filtered = events.filter(sameDayClose);
+      candidates = filtered.length ? filtered : events; // fallback
     }
 
     if (!candidates.length) {
-      await sendWhatsAppText({ to: from, text: "❌ Não encontrei nenhuma consulta com esses dados. Pode revisar?" });
+      await sendWhatsAppText({
+        to: from,
+        text: "❌ Não encontrei consultas com esses dados. Confirme o telefone/nome/data-hora ou envie outra combinação."
+      });
       return;
     }
 
-    // Mostra lista
-    const linhas = candidates.map((ev,i)=>`${i+1}) ${ev.dayLabel} ${ev.timeLabel} — ${ev.summary}`);
+    // Lista para confirmação
+    const linhas = candidates.map((ev, i) => `${i + 1}) ${ev.dayLabel} ${ev.timeLabel} — ${ev.summary}`);
     await sendWhatsAppText({
       to: from,
-      text: "Achei estas consultas:\n" + linhas.join("\n") +
-            "\n\nResponda com **opção N** (ex.: \"opção 1\") para confirmar se é a sua."
+      text:
+        "Encontrei estes registros. **É a sua consulta?**\n" +
+        linhas.join("\n") +
+        '\n\nResponda com **opção N** (ex.: "opção 1").'
     });
-    convMem.cancel = { step:"choose_event", after: convMem.cancel.after, candidates };
+
+    conv.cancel = { step: "choose_event", after: conv.cancel.after, candidates };
     return;
   }
 
-  if (convMem?.cancel?.step === "choose_event") {
-    const txt = userText.trim();
-    const mOpt = txt.match(/op[cç][aã]o\s*(\d+)/i) || txt.match(/^(\d+)$/);
+  // 3) Escolha da opção
+  if (conv?.cancel?.step === "choose_event") {
+    const sel = (userText || "").trim();
+    const mOpt = sel.match(/^\s*op[cç][aã]o\s*(\d+)\s*$/i) || sel.match(/^\s*(\d+)\s*$/);
     if (!mOpt) {
-      await sendWhatsAppText({ to: from, text: "Por favor, responda com **opção N**." });
+      await sendWhatsAppText({ to: from, text: 'Por favor, responda com **opção N** (ex.: "opção 1").' });
       return;
     }
-    const chosen = convMem.cancel.candidates[Number(mOpt[1])-1];
+
+    const idx = Number(mOpt[1]) - 1;
+    const chosen = (conv.cancel.candidates || [])[idx];
     if (!chosen) {
       await sendWhatsAppText({ to: from, text: "Opção inválida. Tente novamente." });
       return;
     }
 
-    // Confirma antes de cancelar
-    convMem.cancel = { step:"confirm_cancel", after: convMem.cancel.after, chosen };
+    conv.cancel = { step: "confirm_cancel", after: conv.cancel.after, chosen };
     await sendWhatsAppText({
       to: from,
-      text: `Confirma que sua consulta é:\n📅 ${chosen.dayLabel} ${chosen.timeLabel}\n${chosen.summary}\n\nDigite **sim** para cancelar ou **não** para desistir.`
+      text:
+        `Confirma que **esta é a sua consulta**?\n` +
+        `📅 ${chosen.dayLabel} ${chosen.timeLabel}\n` +
+        `${chosen.summary}\n\n` +
+        `Responda **sim** para cancelar, ou **não** para desistir.`
     });
     return;
   }
 
-  if (convMem?.cancel?.step === "confirm_cancel") {
-    if (/^sim$/i.test(userText)) {
-      const chosen = convMem.cancel.chosen;
-      await cancelCalendarEvent({ eventId: chosen.id });
-      await sendWhatsAppText({ to: from, text: `✅ Consulta cancelada: ${chosen.dayLabel} ${chosen.timeLabel}` });
+  // 4) Confirma / cancela e (opcional) oferece remarcação
+  if (conv?.cancel?.step === "confirm_cancel") {
+    const yes = /^sim$/i.test(userText);
+    const no  = /^n[aã]o$/i.test(userText);
 
-      if (convMem.cancel.after) {
-        // Reagendar
-        convMem.cancel = null;
-        const slots = await listAvailableSlots({ fromISO: new Date().toISOString(), days:7, limit:10 });
-        const linhas = slots.map((s,i)=>`${i+1}) ${s.dayLabel} ${s.label}`);
+    if (!yes && !no) {
+      await sendWhatsAppText({ to: from, text: 'Digite **sim** para cancelar ou **não** para manter.' });
+      return;
+    }
+
+    const { chosen, after } = conv.cancel;
+    conv.cancel = null; // limpa estado
+
+    if (no) {
+      await sendWhatsAppText({ to: from, text: "Ok, nada foi cancelado. Posso ajudar em algo mais?" });
+      return;
+    }
+
+    // yes -> cancelar
+    try {
+      await cancelCalendarEvent({ eventId: chosen.id });
+      await sendWhatsAppText({
+        to: from,
+        text: `✅ Consulta cancelada: ${chosen.dayLabel} ${chosen.timeLabel}.`
+      });
+    } catch (err) {
+      console.error("[cancelCalendarEvent] erro:", err?.response?.data || err);
+      await sendWhatsAppText({
+        to: from,
+        text: "Tive um problema ao cancelar agora. Pode tentar novamente em instantes ou me avisar para eu verificar?"
+      });
+      return;
+    }
+
+    if (after === "schedule") {
+      const slots = await listAvailableSlots({ fromISO: new Date().toISOString(), days: 7, limit: 10 });
+      if (!slots?.length) {
         await sendWhatsAppText({
           to: from,
-          text: "Vamos remarcar. Aqui estão os próximos horários:\n" +
-                linhas.join("\n") +
-                "\n\nResponda com **opção N** para escolher."
+          text: "Vamos remarcar. No momento não há horários próximos. Me diga uma **data** (ex.: 24/10)."
         });
-        convMem.lastSlots = slots;
-      } else {
-        convMem.cancel = null;
-        await sendWhatsAppText({ to: from, text: "Posso te ajudar em algo mais? 😊" });
+        return;
       }
+      const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`);
+      await sendWhatsAppText({
+        to: from,
+        text:
+          "Vamos remarcar. Seguem os **horários mais próximos**:\n" +
+          linhas.join("\n") +
+          '\n\nResponda com **opção N** (ex.: "opção 3"). Você também pode enviar **"ver mais"** para horários mais tarde.'
+      });
+      const mem = ensureConversation(from);
+      mem.lastSlots  = slots;
+      mem.slotMode   = "near";
+      mem.slotCursor = { fromISO: new Date().toISOString(), days: 7 };
+      mem.updatedAt  = Date.now();
     } else {
-      await sendWhatsAppText({ to: from, text: "Ok, não cancelei nada. Posso te ajudar em algo mais?" });
-      convMem.cancel = null;
+      await sendWhatsAppText({ to: from, text: "Posso te ajudar em algo mais? 😊" });
     }
     return;
   }
