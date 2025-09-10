@@ -19,6 +19,45 @@ import { listAvailableSlots } from "./slots.esm.js";
 
 // <<< FIM CALENDÁRIO
 
+// === HELPERS: parsing de data, hora, opção e confirmação ===
+function _findBrDate(text) {
+  if (!text) return null;
+  const m = text.match(/(?:\b(?:dia|no|na|neste|nesse|nesta)\s*)?(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?\b/i);
+  if (!m) return null;
+  const dd = String(m[1]).padStart(2, "0");
+  const mm = String(m[2]).padStart(2, "0");
+  const yyyy = m[3] ? (String(m[3]).length === 2 ? 2000 + Number(m[3]) : Number(m[3])) : new Date().getFullYear();
+  return { dd, mm, yyyy, iso: `${yyyy}-${mm}-${dd}` };
+}
+
+function _findTime(text) {
+  if (!text) return null;
+  const m = text.match(/\b(\d{1,2})(?:[:hH](\d{2}))\b|\b(\d{1,2})h\b/i);
+  if (m) {
+    const hh = String(m[1] || m[3]).padStart(2, "0");
+    const mi = String(m[2] || "00").padStart(2, "0");
+    return { hh, mi };
+  }
+  return null;
+}
+
+function _optionFromText(text) {
+  if (!text) return null;
+  const emoji = text.match(/([0-9])\uFE0F?\u20E3/); // 2️⃣ etc.
+  if (emoji) return Number(emoji[1]);
+  const m = text.trim().match(/\b(?:op(?:ç(?:a|ã)o)?|opc|opcao|opção|n(?:úm(?:ero)?)?|num|#)?\s*([1-9]|10)\b/i);
+  if (m) return Number(m[1]);
+  return null;
+}
+
+function _isAffirmative(text) {
+  return /\b(sim|pode|ok|manda|envia|envie|quero|poderia|mostra|mostre)\b/i.test(text || "");
+}
+
+// compat: se algum trecho antigo usa optionFromText
+const optionFromText = _optionFromText;
+
+
 dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -1046,7 +1085,7 @@ const patientPhone = _normPhone(from);
 
 // tags no description (permite achar via busca 'q')
 const metaTags = `#cristina #patient_phone:${patientPhone} #patient_name:${patientName || ""}`.trim();
-description = [description || "", metaTags].filter(Boolean).join("\n");
+const descriptionWithMeta = [description || "", metaTags].filter(Boolean).join("\n");
 
 // propriedades privadas (opcional, mas recomendado)
 const extendedProperties = {
@@ -1060,12 +1099,12 @@ const extendedProperties = {
 // --- chamada ajustada ---
 await createCalendarEvent({
   summary,
-  description,
+  description: descriptionWithMeta,   // <-- usa a nova variável
   startISO,
   endISO,
   location,
   calendarId: process.env.GOOGLE_CALENDAR_ID || "primary",
-  extendedProperties,           // << NOVO
+  extendedProperties,
 });
           } else {
             console.warn("Confirmação detectada, mas não consegui interpretar data/hora:", textForParser);
