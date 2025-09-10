@@ -80,15 +80,14 @@ export async function findPatientEvents({
   // busca pelo telefone (que gravamos em description como #patient_phone:<número>)
   const q = String(phone || "").trim();
   const res = await calendar.events.list({
-    calendarId: calId,
-    singleEvents: true,
-    showDeleted: false,
-    orderBy: "startTime",
-    timeMin,
-    timeMax,
-    q,
-    maxResults: 50,
-  });
+  calendarId: calId,
+  singleEvents: true,
+  showDeleted: false,
+  orderBy: "startTime",
+  timeMin,
+  timeMax,
+  maxResults: 250,   // aumenta o teto para não perder eventos
+});
 
   const items = res?.data?.items || [];
   const nameNorm   = String(name || "").trim().toLowerCase();
