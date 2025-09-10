@@ -614,6 +614,13 @@ async function handleInbound(req, res) {
       return;
     }
 
+    const trimmed = (userText || "").trim().toLowerCase();
+  
+    if (["reset", "reiniciar", "reiniciar conversa", "novo atendimento"].includes(trimmed)) {
+  resetConversation(from);
+  return;
+}
+    
 // === INTENÇÃO DE CANCELAMENTO / REAGENDAMENTO ===
 {
   const convMem = ensureConversation(from);
@@ -662,6 +669,18 @@ async function handleInbound(req, res) {
   const convMem = getConversation(from);
   if (convMem?.mode === "cancel") {
     const ctx = convMem.cancelCtx || (convMem.cancelCtx = { phone: "", name: "", dateISO: null, timeHHMM: null, chosenEvent: null });
+// Se paciente respondeu "1", "2", etc. e já existe lista salva → processa aqui
+const pickM = (userText || "").match(/^\s*(\d{1,2})\s*$/);
+if (pickM && Array.isArray(convMem.cancelCtx?.matchList) && convMem.cancelCtx.matchList.length) {
+  const idx = Number(pickM[1]) - 1;
+  const chosen = convMem.cancelCtx.matchList[idx];
+  if (chosen) {
+    ctx.chosenEvent = chosen;
+  } else {
+    await sendWhatsAppText({ to: from, text: "Número inválido. Responda com 1, 2, 3 conforme a lista." });
+    return;
+  }
+}
 
     // 1) Tentar extrair telefone e nome do texto livre
     // telefone
@@ -771,14 +790,6 @@ async function handleInbound(req, res) {
       convMem.cancelCtx.matchList = matches;
       convMem.updatedAt = Date.now();
       return;
-    }
-
-    // 6.1) Se paciente respondeu "1", "2", etc., selecionar
-    const pickM = (userText || "").match(/^\s*(\d{1,2})\s*$/);
-    if (pickM && Array.isArray(convMem.cancelCtx.matchList) && convMem.cancelCtx.matchList.length) {
-      const idx = Number(pickM[1]) - 1;
-      const chosen = convMem.cancelCtx.matchList[idx];
-      if (chosen) ctx.chosenEvent = chosen;
     }
 
     // 7) Se ainda não fixou um evento (mas só há 1), pega o único
@@ -968,13 +979,6 @@ if ((getConversation(from)?.mode || null) !== "cancel") {
   } catch (e) {
     console.error("[future-date] erro:", e?.message || e);
   }
-}
-
-    const trimmed = (userText || "").trim().toLowerCase();
-  
-    if (["reset", "reiniciar", "reiniciar conversa", "novo atendimento"].includes(trimmed)) {
-  resetConversation(from);
-  return;
 }
 
     // Montagem de contexto para a IA
