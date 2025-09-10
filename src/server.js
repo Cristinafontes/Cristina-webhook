@@ -612,6 +612,23 @@ if (/^\s*(reset|resetar|reiniciar|limpar)\s*$/i.test(msgText)) {
   return;
 }
 // ===== FIM DO HARD RESET =====
+
+    const msgType = p?.type;
+    if (!from) return;
+
+    // Extrai texto
+    let userText = "";
+    if (msgType === "text") {
+      userText = p?.payload?.text || "";
+    } else if (msgType === "button_reply" || msgType === "list_reply") {
+      userText = p?.payload?.title || p?.payload?.postbackText || "";
+    } else {
+      await sendWhatsAppText({
+        to: from,
+        text: "Por ora, consigo ler apenas mensagens de texto. Pode tentar novamente?",
+      });
+      return;
+    }
 // === INTENÇÃO DE CANCELAMENTO / REAGENDAMENTO ===
 {
   const rescheduleIntent = /\b(reagend(ar|amento)|remarc(ar|ação)|adiar|mudar\s*o?\s*hor[áa]rio)\b/i;
@@ -784,24 +801,6 @@ if (/^\s*(reset|resetar|reiniciar|limpar)\s*$/i.test(msgText)) {
     return;
   }
 }
-
-    const msgType = p?.type;
-    const from = p?.sender?.phone || p?.source;
-    if (!from) return;
-
-    // Extrai texto
-    let userText = "";
-    if (msgType === "text") {
-      userText = p?.payload?.text || "";
-    } else if (msgType === "button_reply" || msgType === "list_reply") {
-      userText = p?.payload?.title || p?.payload?.postbackText || "";
-    } else {
-      await sendWhatsAppText({
-        to: from,
-        text: "Por ora, consigo ler apenas mensagens de texto. Pode tentar novamente?",
-      });
-      return;
-    }
 
 // === ATALHO: "opção N" + paginação de horários (fora do modo cancel) ===
 try {
@@ -1095,7 +1094,7 @@ const summary = `Consulta (${modality}) — ${name} — ${reason} — ${phoneFor
 
 // Descrição com modalidade
 // Tags de máquina para facilitar a busca
-const phoneDigits = String(rawPhone || "").replace(/\D/g, "");
+const phoneDigits = String(from || "").replace(/\D/g, "");
 const nameTag = String(name || "").trim().toLowerCase();
 
 const description = [
