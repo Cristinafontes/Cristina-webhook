@@ -901,7 +901,6 @@ if ((getConversation(from)?.mode || null) !== "cancel") {
   try {
     const raw = String(userText || "");
     // --- DIA SEM MÊS: "tem dia 26?", "dia 02" ou só "26" ---
-// Usa mês corrente; se já passou, usa o próximo mês.
 {
   const tz = process.env.TZ || "America/Sao_Paulo";
   const dayOnlyMatch =
@@ -912,24 +911,18 @@ if ((getConversation(from)?.mode || null) !== "cancel") {
     const reqDay = Math.max(1, Math.min(31, Number(dayOnlyMatch[1])));
     const now   = new Date(new Date().toLocaleString("en-US", { timeZone: tz }));
     let year  = now.getFullYear();
-    let month = now.getMonth(); // 0-11
+    let month = now.getMonth();
 
-    // Se o dia pedido já passou neste mês, pula para o mês seguinte
     if (reqDay < now.getDate()) {
       month += 1;
       if (month > 11) { month = 0; year += 1; }
     }
 
-    // Ajusta se o mês não tiver esse dia (ex.: 31/11 → 30/11)
     const lastDay = new Date(year, month + 1, 0).getDate();
     const day = Math.min(reqDay, lastDay);
 
     const dayStart = new Date(year, month, day, 0, 0, 0);
-    const slots = await listAvailableSlots({
-      fromISO: dayStart.toISOString(),
-      days: 1,
-      limit: 10
-    });
+    const slots = await listAvailableSlots({ fromISO: dayStart.toISOString(), days: 1, limit: 10 });
 
     const convMem = ensureConversation(from);
     convMem.lastSlots = slots;
@@ -942,17 +935,17 @@ if ((getConversation(from)?.mode || null) !== "cancel") {
       await sendWhatsAppText({
         to: from,
         text:
-          `Verifiquei o dia **${d}/${m}** e não encontrei horários livres.\n` +
-          `Se preferir, diga outra data ou responda **mais** para eu sugerir alternativas próximas.`
+          `Verifiquei o dia ${d}/${m} e não encontrei horários livres.\n` +
+          `Se preferir, diga outra data ou escreva "mais" que eu trago alternativas próximas.`
       });
     } else {
       const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`).join("\n");
       await sendWhatsAppText({
         to: from,
         text:
-          `Estas são as opções para **${d}/${m}**:\n` +
+          `Tenho estas opções para ${d}/${m}:\n` +
           linhas +
-          `\n\nResponda **opção N** (ex.: opção 3) ou envie a data e o horário desejados (ex.: 24/09 14:00).`
+          `\n\nResponda "opção N" (ex.: opção 3) ou envie a data e o horário desejados (ex.: 24/09 14:00).`
       });
     }
     return;
