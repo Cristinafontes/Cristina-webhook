@@ -623,7 +623,6 @@ async function handleInbound(req, res) {
     });
     return;
   }
-
   const conv = getConversation(from);
 
   // 2) Coleta tudo numa mensagem e busca
