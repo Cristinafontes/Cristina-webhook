@@ -620,9 +620,11 @@ async function handleInbound(req, res) {
         "• Seu **telefone**\n" +
         "• A **data e o horário** da consulta\n\n" +
         "Ex.: *Ana Luiza Duarte, 11 91234-5678, 26/09 às 09:00*\n\n" +
+        "⚠️ Basta **um** desses dados (nome OU telefone OU data/hora). Os outros ajudam a restringir."
     });
     return;
   }
+
   const conv = getConversation(from);
 
   // 2) Coleta tudo numa mensagem e busca
