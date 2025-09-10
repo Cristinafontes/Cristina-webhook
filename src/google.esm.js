@@ -92,15 +92,32 @@ export async function findPatientEvents({
 
   const items = res?.data?.items || [];
   const nameNorm = String(name || "").trim().toLowerCase();
+  const phoneDigits = String(phone || "").replace(/\D/g, "");
 
   const filtered = items.filter((ev) => {
-    const desc = (ev.description || "").toLowerCase();
-    const sum = (ev.summary || "").toLowerCase();
-    const hasPhoneTag =
-      /#patient_phone:\d+/.test(desc) || (q && desc.includes(q));
-    const nameOk = nameNorm ? desc.includes(nameNorm) || sum.includes(nameNorm) : true;
-    return hasPhoneTag && nameOk && ev.status !== "cancelled";
-  });
+  const desc = String(ev.description || "");
+  const sum  = String(ev.summary || "");
+  const descLower = desc.toLowerCase();
+  const sumLower  = sum.toLowerCase();
+  const descDigits = desc.replace(/\D/g, "");
+
+  // Telefone: vale se tiver o tag OU se os dígitos do telefone estiverem na descrição formatada
+  const phoneOk = phoneDigits
+    ? (descLower.includes(`#patient_phone:${phoneDigits}`) ||
+       /#patient_phone:\d+/.test(descLower) ||
+       (phoneDigits && descDigits.includes(phoneDigits)))
+    : true;
+
+  // Nome: vale se aparecer na descrição, no título, ou no tag
+  const nameOk = nameNorm
+    ? (descLower.includes(nameNorm) ||
+       sumLower.includes(nameNorm) ||
+       descLower.includes(`#patient_name:${nameNorm}`))
+    : true;
+
+  return phoneOk && nameOk;
+});
+
 
   return filtered.map((ev) => {
     const startISO =
