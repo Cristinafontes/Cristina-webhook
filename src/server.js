@@ -585,24 +585,33 @@ async function handleInbound(req, res) {
     if (eventType !== "message") return;
 
     const p = req.body?.payload || {};
-    const msgType = p?.type;
-    const from = p?.sender?.phone || p?.source;
-    if (!from) return;
+    // ===== HARD RESET (curto-circuito, executa antes de qualquer outra regra) =====
+const from =
+  p?.sender?.phone ||
+  p?.source?.phone ||
+  p?.source ||
+  p?.from ||
+  p?.phone ||
+  p?.waId ||
+  "";
 
-    // Extrai texto
-    let userText = "";
-    if (msgType === "text") {
-      userText = p?.payload?.text || "";
-    } else if (msgType === "button_reply" || msgType === "list_reply") {
-      userText = p?.payload?.title || p?.payload?.postbackText || "";
-    } else {
-      await sendWhatsAppText({
-        to: from,
-        text: "Por ora, consigo ler apenas mensagens de texto. Pode tentar novamente?",
-      });
-      return;
-    }
+const msgText = String(
+  p?.text || p?.payload?.text || p?.message?.text || p?.message || ""
+).trim();
 
+if (/^\s*(reset|resetar|reiniciar|limpar)\s*$/i.test(msgText)) {
+  const mem = ensureConversation(from);
+  Object.assign(mem, {
+    cancel: null,
+    lastSlots: null,
+    slotMode: null,
+    slotCursor: null,
+    pending: null,
+  });
+  await sendWhatsAppText({ to: from, text: "🔄 Memória limpa. Pode começar de novo." });
+  return;
+}
+// ===== FIM DO HARD RESET =====
 // === INTENÇÃO DE CANCELAMENTO / REAGENDAMENTO ===
 {
   const rescheduleIntent = /\b(reagend(ar|amento)|remarc(ar|ação)|adiar|mudar\s*o?\s*hor[áa]rio)\b/i;
@@ -775,6 +784,25 @@ async function handleInbound(req, res) {
     return;
   }
 }
+
+    const msgType = p?.type;
+    const from = p?.sender?.phone || p?.source;
+    if (!from) return;
+
+    // Extrai texto
+    let userText = "";
+    if (msgType === "text") {
+      userText = p?.payload?.text || "";
+    } else if (msgType === "button_reply" || msgType === "list_reply") {
+      userText = p?.payload?.title || p?.payload?.postbackText || "";
+    } else {
+      await sendWhatsAppText({
+        to: from,
+        text: "Por ora, consigo ler apenas mensagens de texto. Pode tentar novamente?",
+      });
+      return;
+    }
+
 // === ATALHO: "opção N" + paginação de horários (fora do modo cancel) ===
 try {
   const convMem = getConversation(from);
@@ -1066,7 +1094,7 @@ const { name, phoneFormatted, reason, modality } = extractPatientInfo({
 const summary = `Consulta (${modality}) — ${name} — ${reason} — ${phoneFormatted}`;
 
 // Descrição com modalidade
-// Tags de máquina para facilitar a busca por telefone/nome
+// Tags de máquina para facilitar a busca
 const phoneDigits = String(rawPhone || "").replace(/\D/g, "");
 const nameTag = String(name || "").trim().toLowerCase();
 
