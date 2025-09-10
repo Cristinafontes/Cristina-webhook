@@ -620,6 +620,48 @@ async function handleInbound(req, res) {
   resetConversation(from);
   return;
 }
+
+    // === ATALHO GLOBAL: escolha por número ou "opção N" ===
+try {
+  const convMem = getConversation(from);
+  const txt = (userText || "").trim().toLowerCase();
+
+  // Paginador "mais"
+  if (txt === "mais" || txt === "ver mais" || txt === "mais opções") {
+    if (!convMem?.slotCursor) {
+      await sendWhatsAppText({ to: from, text: "Sem problemas. Diga uma data específica (ex.: 24/09) e eu confiro para você." });
+      return;
+    }
+    // (se você já tem função de paginação, pode deixar aqui dentro)
+  }
+
+  // “opção N” ou número puro (1, 2, 3…)
+  const mOpt =
+    txt.match(/^\s*op[cç][aã]o\s*(\d+)\s*$/i) ||
+    txt.match(/^\s*(\d+)\s*$/);
+
+  if (mOpt && Array.isArray(convMem?.lastSlots) && convMem.lastSlots.length) {
+    const idx = Number(mOpt[1]) - 1;
+    const chosen = convMem.lastSlots[idx];
+
+    if (!chosen) {
+      await sendWhatsAppText({ to: from, text: "Número inválido. Por favor, responda 1, 2 ou 3 conforme a lista." });
+      return;
+    }
+
+    // Converte em mensagem de agendamento normal
+    const dt = new Date(chosen.startISO);
+    const tz = process.env.TZ || "America/Sao_Paulo";
+    const parts = new Intl.DateTimeFormat("pt-BR", {
+      timeZone: tz, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"
+    }).formatToParts(dt).reduce((a,p) => (a[p.type]=p.value, a), {});
+    userText = `Quero agendar nesse horário: ${parts.day}/${parts.month} ${parts.hour}:${parts.minute}`;
+    // segue fluxo normal
+  }
+} catch (e) {
+  console.error("[option-pick global] erro:", e?.message || e);
+}
+
     
 // === INTENÇÃO DE CANCELAMENTO / REAGENDAMENTO ===
 {
@@ -852,65 +894,6 @@ if (!ctx.phone && !ctx.name) {
   }
 }
 
-// === ATALHO: "opção N" + "mais" (somente fora do modo cancelamento) ===
-try {
-  const convMem = getConversation(from);
-  if (convMem?.mode === "cancel") {
-    // ignorar durante cancelamento
-  } else {
-    const txt = (userText || "").trim().toLowerCase();
-
-    // Paginação "mais"
-    if (txt === "mais" || txt === "ver mais" || txt === "mais opções") {
-      const cursor = convMem?.slotCursor || { fromISO: new Date().toISOString(), page: 1 };
-      const base = new Date(cursor.fromISO);
-      // avança janela em 7 dias por página
-      const nextFrom = new Date(base.getTime() + cursor.page * 7 * 86400000).toISOString();
-
-      const more = await listAvailableSlots({ fromISO: nextFrom, days: 7, limit: 12 });
-      if (!more.length) {
-        await sendWhatsAppText({ to: from, text: "Sem mais horários nesta janela. Diga uma **data específica** (ex.: 30/09) para eu procurar." });
-      } else {
-        const linhas = more.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`).join("\n");
-        await sendWhatsAppText({
-          to: from,
-          text: "Aqui vão **mais opções**:\n" + linhas + '\n\nResponda com **opção N** ou informe **data e horário**.'
-        });
-        const convUpd = ensureConversation(from);
-        convUpd.lastSlots = more;
-        convUpd.slotCursor = { fromISO: nextFrom, page: (cursor.page || 1) + 1 };
-        convUpd.updatedAt = Date.now();
-      }
-      return;
-    }
-
-    // "opção N" ou somente "N"
-    const mOpt =
-      txt.match(/^\s*op[cç][aã]o\s*(\d+)\s*$/i) ||
-      txt.match(/^\s*(\d+)\s*$/);
-
-    if (mOpt && convMem?.lastSlots && Array.isArray(convMem.lastSlots)) {
-      const idx = Number(mOpt[1]) - 1;
-      const chosen = convMem.lastSlots[idx];
-
-      if (!chosen) {
-        await sendWhatsAppText({ to: from, text: "Número inválido. Responda com **opção N** conforme a lista atual ou peça **mais**." });
-        return;
-      }
-
-      // Troca o userText para o formato que já ativa o fluxo de criação
-      const dt = new Date(chosen.startISO);
-      const tz = process.env.TZ || "America/Sao_Paulo";
-      const fmt = new Intl.DateTimeFormat("pt-BR", {
-        timeZone: tz, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"
-      }).formatToParts(dt).reduce((acc, p) => (acc[p.type] = p.value, acc), {});
-      const ddmmhhmm = `${fmt.day}/${fmt.month} ${fmt.hour}:${fmt.minute}`;
-      userText = `Quero agendar nesse horário: ${ddmmhhmm}`;
-    }
-  }
-} catch (e) {
-  console.error("[option-pick] erro:", e?.message || e);
-}
     safeLog("INBOUND", req.body);
 
 // === PEDIDO DE DATA ESPECÍFICA (ex.: "tem dia 24/09?", "quero dia 24/09") ===
