@@ -639,10 +639,8 @@ async function handleInbound(req, res) {
     await sendWhatsAppText({
       to: from,
       text:
-        "Vamos **remarcar**. Primeiro, preciso identificar seu agendamento atual para cancelar.\n" +
-        "Me envie, por favor:\n" +
-        "• **Telefone** (DDD + número) **e** **Nome completo**.\n" +
-        "Se não tiver os dois agora, pode enviar **apenas um deles**. Se souber, informe também **data e horário** (ex.: 26/09 09:00)."
+  "Vamos remarcar. Para localizar seu agendamento atual, confirme **nome completo** ou **telefone (DDD + número)**.\n" +
+  "Se souber, você pode informar também a **data e o horário** como filtro."
     });
     return;
   }
@@ -656,9 +654,8 @@ async function handleInbound(req, res) {
     await sendWhatsAppText({
       to: from,
       text:
-        "Certo, vamos **cancelar**. Para localizar seu agendamento, me envie:\n" +
-        "• **Telefone** (DDD + número) **e** **Nome completo**.\n" +
-        "Se preferir, pode enviar **apenas um** deles. Se souber, informe também **data e horário** (ex.: 26/09 09:00)."
+        "Certo, vamos cancelar. Para garantir que estou encontrando o agendamento correto, confirme **nome completo** ou **telefone (DDD + número)**.\n" +
+        "Se souber, você pode informar também a **data e o horário** como filtro."
     });
     return;
   }
@@ -677,7 +674,7 @@ if (pickM && Array.isArray(convMem.cancelCtx?.matchList) && convMem.cancelCtx.ma
   if (chosen) {
     ctx.chosenEvent = chosen;
   } else {
-    await sendWhatsAppText({ to: from, text: "Número inválido. Responda com 1, 2, 3 conforme a lista." });
+    await sendWhatsAppText({ to: from, text: "Número inválido. Por favor, responda **1**, **2** ou **3** conforme a lista." });
     return;
   }
 }
@@ -706,18 +703,17 @@ if (pickM && Array.isArray(convMem.cancelCtx?.matchList) && convMem.cancelCtx.ma
       ctx.timeHHMM = `${hh}:${mi}`;
     }
 
-    // 3) Se ainda não tenho NENHUM dos 3 (telefone OU nome OU data), peço novamente de forma clara
-    if (!ctx.phone && !ctx.name && !ctx.dateISO) {
-      await sendWhatsAppText({
-        to: from,
-        text:
-          "Para localizar seu agendamento, envie pelo menos **um** dos dados abaixo:\n" +
-          "• **Telefone** (DDD + número)\n" +
-          "• **Nome completo**\n" +
-          "• **Data** (ex.: 26/09) — se souber o horário, melhor ainda (ex.: 09:00)"
-      });
-      return;
-    }
+    // 3) Agora exigimos nome OU telefone; data/hora é só filtro adicional
+if (!ctx.phone && !ctx.name) {
+  await sendWhatsAppText({
+    to: from,
+    text:
+      "Obrigado pelas informações. Para localizar seu agendamento, preciso de **nome completo** ou **telefone (DDD + número)**.\n" +
+      "A **data e o horário** podem ser enviados como filtro adicional, se você tiver."
+  });
+  return;
+}
+
 
     // 4) Buscar eventos: se tiver telefone/nome uso o Google; se tiver data/hora, filtro também pela data
     let matches = [];
@@ -784,8 +780,9 @@ if (pickM && Array.isArray(convMem.cancelCtx?.matchList) && convMem.cancelCtx.ma
       await sendWhatsAppText({
         to: from,
         text:
-          "Encontrei mais de um agendamento. Escolha **1**, **2**, **3**...\n" +
-          linhas.join("\n")
+          "Encontrei mais de um agendamento associado. Escolha o número desejado:\n" +
+          linhas.join("\n") +
+          "\n\nSe preferir, você também pode escrever a **data e o horário** para eu filtrar."
       });
       convMem.cancelCtx.matchList = matches;
       convMem.updatedAt = Date.now();
@@ -920,6 +917,65 @@ try {
 if ((getConversation(from)?.mode || null) !== "cancel") {
   try {
     const raw = String(userText || "");
+    // --- DIA SEM MÊS: "tem dia 26?", "dia 02" ou só "26" ---
+// Usa mês corrente; se já passou, usa o próximo mês.
+{
+  const tz = process.env.TZ || "America/Sao_Paulo";
+  const dayOnlyMatch =
+    raw.match(/\b(?:tem\s*dia|dia)\s*(\d{1,2})\b/i) ||
+    (/^\s*\d{1,2}\s*$/.test(raw) ? [raw, raw.trim()] : null);
+
+  if (dayOnlyMatch) {
+    const reqDay = Math.max(1, Math.min(31, Number(dayOnlyMatch[1])));
+    const now   = new Date(new Date().toLocaleString("en-US", { timeZone: tz }));
+    let year  = now.getFullYear();
+    let month = now.getMonth(); // 0-11
+
+    // Se o dia pedido já passou neste mês, pula para o mês seguinte
+    if (reqDay < now.getDate()) {
+      month += 1;
+      if (month > 11) { month = 0; year += 1; }
+    }
+
+    // Ajusta se o mês não tiver esse dia (ex.: 31/11 → 30/11)
+    const lastDay = new Date(year, month + 1, 0).getDate();
+    const day = Math.min(reqDay, lastDay);
+
+    const dayStart = new Date(year, month, day, 0, 0, 0);
+    const slots = await listAvailableSlots({
+      fromISO: dayStart.toISOString(),
+      days: 1,
+      limit: 10
+    });
+
+    const convMem = ensureConversation(from);
+    convMem.lastSlots = slots;
+    convMem.updatedAt = Date.now();
+
+    const d = String(day).padStart(2, "0");
+    const m = String(month + 1).padStart(2, "0");
+
+    if (!slots.length) {
+      await sendWhatsAppText({
+        to: from,
+        text:
+          `Verifiquei o dia **${d}/${m}** e não encontrei horários livres.\n` +
+          `Se preferir, diga outra data ou responda **mais** para eu sugerir alternativas próximas.`
+      });
+    } else {
+      const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`).join("\n");
+      await sendWhatsAppText({
+        to: from,
+        text:
+          `Estas são as opções para **${d}/${m}**:\n` +
+          linhas +
+          `\n\nResponda **opção N** (ex.: opção 3) ou envie a data e o horário desejados (ex.: 24/09 14:00).`
+      });
+    }
+    return;
+  }
+}
+
     // dd/mm ou dd/mm/aa(aa) – aceita "dia 24/09", "24-09", etc.
     const mDate = raw.match(/(?:\bdia\s*)?(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?/i);
 
@@ -967,9 +1023,10 @@ if ((getConversation(from)?.mode || null) !== "cancel") {
         } else {
           const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`);
           const msg =
-            `Claro, escolha uma dentre as opções para **${dd}/${mm}** que seguem abaixo:\n` +
+            `Estas são as opções disponíveis para **${dd}/${mm}**:\n` +
             linhas.join("\n") +
-            `\n\nResponda com **opção N** (ex.: "opção 3") ou digite **data e horário** (ex.: "24/09 14:00").`;
+            `\n\nResponda **opção N** (ex.: opção 3) ou envie a data e o horário desejados (ex.: 24/09 14:00).`;
+
           appendMessage(from, "assistant", msg);
           await sendWhatsAppText({ to: from, text: msg });
         }
@@ -1036,11 +1093,10 @@ if (shouldList && modeNow !== "cancel") {
         `Se preferir, me diga uma **data específica** (ex.: "24/09") que eu verifico para você.`;
     } else {
       const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`);
-finalAnswer =
-  "Claro, escolha uma dentre as opções mais próximas que seguem abaixo:\n" +
-  linhas.join("\n") +
-  "\n\nVocê pode responder com **opção N** (ex.: \"opção 3\") ou digitar **data e horário** (ex.: \"24/09 14:00\").";
-
+      finalAnswer =
+        "Encontrei estas opções próximas:\n" +
+        linhas.join("\n") +
+        "\n\nResponda **opção N** (ex.: opção 3) ou envie **data e horário** (ex.: 24/09 14:00).";
       
       const convMem = ensureConversation(from);
       convMem.lastSlots = slots;
