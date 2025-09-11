@@ -926,18 +926,7 @@ try {
     const txt = (userText || "").toLowerCase();
 
     // Intenções típicas de "lembrar/consultar meu agendamento"
-    const retrieveIntent =
-      /\b( (quando\s+(é|sera|será)\s+minha\s+consulta)
-         |(qual\s+(é\s+)?(o\s+)?hor[aá]rio\s+da\s+minha\s+consulta)
-         |(que\s+horas\s+([ée])\s+a?\s*consulta)
-         |(que\s+dia\s+marquei)
-         |(meu\s+agendamento)
-         |(minha\s+consulta)
-         |(esqueci\s+(a\s+)?data(\s+e\s+hor[aá]rio)?)
-         |(esqueci\s+o\s+hor[aá]rio)
-         |(lembrar\s+(da\s+)?consulta)
-         |(confirmar\s+meu\s+hor[aá]rio)
-       )\b/x;
+    const retrieveIntent = /\b((quando\s+(é|sera|será)\s+minha\s+consulta)|(qual\s+(é\s+)?(o\s+)?hor[áa]rio\s+da\s+minha\s+consulta)|(que\s+horas\s+(é|sera|será)\s+a?\s*consulta)|(que\s+dia\s+marquei)|(meu\s+agendamento)|(minha\s+consulta)|(esqueci\s+(a\s+)?data(\s+e\s+hor[áa]rio)?)|(esqueci\s+o\s+hor[áa]rio)|(lembrar\s+(da\s+)?consulta)|(confirmar\s+meu\s+hor[áa]rio))\b/i;
 
     if (retrieveIntent.test(txt)) {
       // Tenta extrair Nome/Telefone do histórico/payload
