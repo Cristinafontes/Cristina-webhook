@@ -867,12 +867,14 @@ try {
     if (txt === "mais" || txt === "ver mais" || txt === "mais opções") {
       const cursor = convMem?.slotCursor || { fromISO: new Date().toISOString(), page: 1 };
       const base = new Date(cursor.fromISO);
-      // avança janela em 7 dias por página
       const nextFrom = new Date(base.getTime() + cursor.page * 7 * 86400000).toISOString();
 
       const more = await listAvailableSlots({ fromISO: nextFrom, days: 7, limit: 12 });
       if (!more.length) {
-        await sendWhatsAppText({ to: from, text: "Sem mais horários nesta janela. Diga uma **data específica** (ex.: 30/09) para eu procurar." });
+        await sendWhatsAppText({
+          to: from,
+          text: "Sem mais horários nesta janela. Se preferir, diga uma **data específica** (ex.: 30/09) ou peça outro dia da semana (ex.: \"próxima quinta\")."
+        });
       } else {
         const linhas = more.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`).join("\n");
         await sendWhatsAppText({
@@ -884,24 +886,27 @@ try {
         convUpd.slotCursor = { fromISO: nextFrom, page: (cursor.page || 1) + 1 };
         convUpd.updatedAt = Date.now();
       }
-      return;
+      return; // evita cair em outras regras neste turno
     }
 
-    // "opção N" ou somente "N"
+    // "opção N" ou somente "N" (agora aceita "2)", "opção 3.", "escolho 4", etc.)
     const mOpt =
-      txt.match(/^\s*op[cç][aã]o\s*(\d+)\s*$/i) ||
-      txt.match(/^\s*(\d+)\s*$/);
+      txt.match(/^\s*op[cç][aã]o\s*(\d+)[).]?\s*$/i) ||
+      txt.match(/^\s*(?:escolho|quero|vai\s*ser)?\s*(\d+)[).]?\s*$/i);
 
     if (mOpt && convMem?.lastSlots && Array.isArray(convMem.lastSlots)) {
       const idx = Number(mOpt[1]) - 1;
       const chosen = convMem.lastSlots[idx];
 
       if (!chosen) {
-        await sendWhatsAppText({ to: from, text: "Número inválido. Responda com **opção N** conforme a lista atual ou peça **mais**." });
+        await sendWhatsAppText({
+          to: from,
+          text: "Número inválido. Responda com **opção N** conforme a lista atual, ou peça **mais** para ver outras opções."
+        });
         return;
       }
 
-      // Troca o userText para o formato que já ativa o fluxo de criação
+      // Converte a escolha em texto que já ativa o fluxo de criação
       const dt = new Date(chosen.startISO);
       const tz = process.env.TZ || "America/Sao_Paulo";
       const fmt = new Intl.DateTimeFormat("pt-BR", {
@@ -909,11 +914,13 @@ try {
       }).formatToParts(dt).reduce((acc, p) => (acc[p.type] = p.value, acc), {});
       const ddmmhhmm = `${fmt.day}/${fmt.month} ${fmt.hour}:${fmt.minute}`;
       userText = `Quero agendar nesse horário: ${ddmmhhmm}`;
+      // segue o fluxo normal (sem return)
     }
   }
 } catch (e) {
   console.error("[option-pick] erro:", e?.message || e);
 }
+
     safeLog("INBOUND", req.body);
 // === ENTENDE "tem dia 19?" (sem mês) e "próxima terça?" (dia da semana) ===
 try {
@@ -1074,6 +1081,26 @@ if ((getConversation(from)?.mode || null) !== "cancel") {
     }
   } catch (e) {
     console.error("[future-date] erro:", e?.message || e);
+  }
+}
+// === GUARDA: paciente pescando datas com texto impreciso (re-prompt acolhedor, sem travar) ===
+{
+  const raw = (userText || "").toLowerCase();
+
+  // sinais de que a pessoa está falando de datas/agenda, mas sem dar algo que nossas regras entendem
+  const hintsDate = /\b(tem|dia|data|agenda|quando|qdo|pr[oó]xim[ao]s?|semana|segunda|ter[cç]a|quarta|quinta|sexta|s[áa]bado)\b/.test(raw);
+  const hasExplicit = /(\b\d{1,2}[\/\-]\d{1,2}\b)|\b(\d{1,2}:\d{2})\b/.test(raw);
+  const looksOption = /^\s*(op[cç][aã]o\s*)?\d+[).]?\s*$/.test(raw);
+
+  if (hintsDate && !hasExplicit && !looksOption && (getConversation(from)?.mode || null) !== "cancel") {
+    // Acolhe, pede no formato que destrava e segue o fluxo
+    await sendWhatsAppText({
+      to: from,
+      text:
+        "Claro! Posso te ajudar com a agenda. Me diga uma **data** (ex.: 24/09) ou responda com **opção N** da lista. " +
+        "Se preferir, pode perguntar por um dia da semana (ex.: \"próxima quinta\")."
+    });
+    // Mantemos a conversa aberta (sem return) para que a IA também possa responder, se quiser.
   }
 }
 
