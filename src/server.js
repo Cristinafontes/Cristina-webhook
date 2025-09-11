@@ -637,14 +637,13 @@ async function handleInbound(req, res) {
     convMem.updatedAt = Date.now();
 
     await sendWhatsAppText({
-      to: from,
-      text:
-        "Vamos **remarcar**. Primeiro, preciso identificar seu agendamento atual para cancelar.\n" +
-        "Me envie, por favor:\n" +
-        "• **Telefone** (DDD + número) **e** **Nome completo**.\n" +
-        "Se não tiver os dois agora, pode enviar **apenas um deles**. Se souber, informe também **data e horário** (ex.: 26/09 09:00)."
-    });
-    return;
+  to: from,
+  text:
+    "Vamos **remarcar**. Primeiro, preciso encontrar seu agendamento atual.\n" +
+    "Por favor, me envie **Telefone** (DDD + número) **e/ou** **Nome completo**.\n" +
+    "Se você souber, **data e horário** também me ajudam a localizar rapidinho (ex.: 26/09 09:00)."
+});
+return;
   }
 
   if (cancelIntent.test(userText)) {
@@ -653,14 +652,14 @@ async function handleInbound(req, res) {
     convMem.cancelCtx = { phone: "", name: "", dateISO: null, timeHHMM: null, chosenEvent: null };
     convMem.updatedAt = Date.now();
 
-    await sendWhatsAppText({
-      to: from,
-      text:
-        "Certo, vamos **cancelar**. Para localizar seu agendamento, me envie:\n" +
-        "• **Telefone** (DDD + número) **e** **Nome completo**.\n" +
-        "Se preferir, pode enviar **apenas um** deles. Se souber, informe também **data e horário** (ex.: 26/09 09:00)."
-    });
-    return;
+    
+await sendWhatsAppText({
+  to: from,
+  text:
+    "Certo, vamos **cancelar**. Para eu localizar seu agendamento, me envie **Telefone** (DDD + número) **e/ou** **Nome completo**.\n" +
+    "Se você souber, **data e horário** também me ajudam a localizar (ex.: 26/09 09:00)."
+});
+return;
   }
 }
 
@@ -669,6 +668,36 @@ async function handleInbound(req, res) {
   const convMem = getConversation(from);
   if (convMem?.mode === "cancel") {
     const ctx = convMem.cancelCtx || (convMem.cancelCtx = { phone: "", name: "", dateISO: null, timeHHMM: null, chosenEvent: null });
+    // Se estamos aguardando confirmação do cancelamento:
+if (ctx.awaitingConfirm) {
+  const yes = /\b(sim|pode|confirmo|confirmar|ok|isso|pode cancelar)\b/i.test(userText || "");
+  const no  = /\b(n[aã]o|negativo|melhor n[aã]o|cancelar n[aã]o)\b/i.test(userText || "");
+
+  if (yes && ctx.chosenEvent) {
+    // segue para o cancelamento (deixa cair no bloco "Cancelar no Google")
+    ctx.awaitingConfirm = false;
+  } else if (no) {
+    // não quer mais cancelar → volta para IA ajudar
+    ctx.awaitingConfirm = false;
+    convMem.mode = null;
+    convMem.after = null;
+
+    await sendWhatsAppText({
+      to: from,
+      text:
+        "Sem problema! Posso **manter** seu agendamento, **tirar dúvidas** sobre a consulta, ou, se preferir, posso **remarcar** para outro dia/horário. Como posso te ajudar agora?"
+    });
+    return;
+  } else {
+    // não entendi; reapresenta o pedido, sem travar
+    await sendWhatsAppText({
+      to: from,
+      text: "Só para confirmar: deseja mesmo **cancelar** esse horário? Responda **sim** ou **não**."
+    });
+    return;
+  }
+}
+
 // Se paciente respondeu "1", "2", etc. e já existe lista salva → processa aqui
 const pickM = (userText || "").match(/^\s*(\d{1,2})\s*$/);
 if (pickM && Array.isArray(convMem.cancelCtx?.matchList) && convMem.cancelCtx.matchList.length) {
@@ -801,18 +830,36 @@ if (pickM && Array.isArray(convMem.cancelCtx?.matchList) && convMem.cancelCtx.ma
       // ainda não escolheu corretamente
       return;
     }
+// 8) Confirma ANTES de cancelar (novo passo)
+if (ctx.chosenEvent && !ctx.awaitingConfirm) {
+  const who = (ctx.name && ctx.name !== "Paciente (WhatsApp)") ? `, ${ctx.name}` : "";
+  const dd = ctx.chosenEvent.dayLabel;
+  const hhmm = ctx.chosenEvent.timeLabel;
 
-    // 8) Cancelar no Google
-    try {
-      await cancelCalendarEvent({ eventId: ctx.chosenEvent.id });
-    } catch (e) {
-      console.error("[cancel-google] erro:", e?.message || e);
-      await sendWhatsAppText({
-        to: from,
-        text: "Tive um erro ao cancelar no calendário. Tente me reenviar a informação ou diga 'reset' para recomeçar."
-      });
-      return;
-    }
+  await sendWhatsAppText({
+    to: from,
+    text:
+      `Pronto${who}, encontrei sua consulta em **${dd}**, às **${hhmm}**.\n` +
+      `Posso proceder com o cancelamento? Responda sim ou não.`
+  });
+
+  // marca que estamos aguardando confirmação
+  ctx.awaitingConfirm = true;
+  convMem.updatedAt = Date.now();
+  return;
+}
+
+    // 8) Cancelar no Google (executa somente após confirmação "sim")
+try {
+  await cancelCalendarEvent({ eventId: ctx.chosenEvent.id });
+} catch (e) {
+  console.error("[cancel-google] erro:", e?.message || e);
+  await sendWhatsAppText({
+    to: from,
+    text: "Tive um erro ao cancelar no calendário. Pode me enviar novamente as informações ou digitar 'reset' para recomeçar?"
+  });
+  return;
+}
 
     // Mensagem padrão compatível com seu fluxo antigo (mantida)
     const dd = ctx.chosenEvent.dayLabel;
