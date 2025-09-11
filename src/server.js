@@ -915,6 +915,102 @@ try {
   console.error("[option-pick] erro:", e?.message || e);
 }
     safeLog("INBOUND", req.body);
+// === ENTENDE "tem dia 19?" (sem mês) e "próxima terça?" (dia da semana) ===
+try {
+  if ((getConversation(from)?.mode || null) !== "cancel") {
+    const raw = String(userText || "").toLowerCase();
+    const tz = process.env.TZ || "America/Sao_Paulo";
+
+    // helpers
+    const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
+    const toISOStart = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0).toISOString();
+
+    // 1) "tem dia 19?" / "dia 02" (sem mês)
+    // evita conflito com dd/mm já tratado depois (não pode ter "/" nem "-")
+    const mDayOnly = raw.match(/\b(?:tem\s+)?dia\s+(\d{1,2})\b(?!\s*[\/\-]\d)/i);
+
+    // 2) "próxima terça?" (dia da semana)
+    const mNextWeekday = raw.match(/\bpr(?:ó|o)xima\s+(domingo|segunda|ter[çc]a|quarta|quinta|sexta|s[áa]bado)s?\b/i);
+
+    let targetDate = null;
+
+    if (mDayOnly) {
+      // Próximo dia do mês >= hoje; se já passou, mês seguinte; se não existir (ex.: 31/04), avança até existir
+      const wantDay = Math.min(31, Number(mDayOnly[1]));
+      const now = new Date();
+      // tenta este mês
+      let y = now.getFullYear();
+      let m = now.getMonth(); // 0-11
+      let candidate = new Date(y, m, wantDay, 0, 0, 0, 0);
+
+      // se o "dia" retrocedeu (não existe esse dia neste mês) ou já passou hoje, vamos avançando mês a mês até achar
+      const todayStart = startOfDay(now).getTime();
+      let guard = 0;
+      while (
+        (candidate.getDate() !== wantDay) || // data "rolou" para outro dia => mês não tem esse dia
+        (candidate.getTime() < todayStart)    // já passou (é antes de hoje 00:00)
+      ) {
+        m += 1;
+        if (m > 11) { m = 0; y += 1; }
+        candidate = new Date(y, m, wantDay, 0, 0, 0, 0);
+        if (++guard > 24) break; // guarda-fio extremo
+      }
+      targetDate = candidate;
+    }
+
+    if (!targetDate && mNextWeekday) {
+      const wkMap = {
+        "domingo": 0, "segunda": 1, "terça": 2, "terca": 2,
+        "quarta": 3, "quinta": 4, "sexta": 5, "sábado": 6, "sabado": 6
+      };
+      const want = wkMap[mNextWeekday[1].normalize("NFD").replace(/[\u0300-\u036f]/g, "")];
+      const now = new Date();
+      const todayDow = now.getDay(); // 0=domingo
+      let add = (want - todayDow + 7) % 7;
+      if (add === 0) add = 7; // "próxima terça" nunca é hoje; é a da semana que vem
+      targetDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + add, 0, 0, 0, 0);
+    }
+
+    if (targetDate) {
+      // Listar opções deste dia
+      const slots = await listAvailableSlots({
+        fromISO: toISOStart(targetDate),
+        days: 1,
+        limit: 10
+      });
+
+      const convMem = ensureConversation(from);
+      convMem.lastSlots = slots;
+      convMem.updatedAt = Date.now();
+
+      const { name } = extractPatientInfo({ payload: p, phone: from, conversation: getConversation(from) });
+
+      // formata dd/mm
+      const fmt = new Intl.DateTimeFormat("pt-BR", { timeZone: tz, day: "2-digit", month: "2-digit" })
+        .formatToParts(targetDate).reduce((acc, part) => (acc[part.type] = part.value, acc), {});
+      const ddmm = `${fmt.day}/${fmt.month}`;
+
+      if (!slots.length) {
+        const msg =
+          `Olá${name ? `, ${name}` : ""}! Para **${ddmm}** não encontrei horários livres.\n` +
+          `Posso te enviar alternativas próximas dessa data ou procurar outra data que você prefira.`;
+        appendMessage(from, "assistant", msg);
+        await sendWhatsAppText({ to: from, text: msg });
+      } else {
+        const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`);
+        const msg =
+          `Claro, seguem as opções para **${ddmm}**:\n` +
+          linhas.join("\n") +
+          `\n\nResponda com **opção N** (ex.: "opção 3") ou digite **data e horário** (ex.: "24/09 14:00").`;
+        appendMessage(from, "assistant", msg);
+        await sendWhatsAppText({ to: from, text: msg });
+      }
+      return; // não deixa cair em outros blocos; evita travar o fluxo
+    }
+  }
+} catch (e) {
+  console.error("[day-only / next-weekday] erro:", e?.message || e);
+}
 
 // === PEDIDO DE DATA ESPECÍFICA (ex.: "tem dia 24/09?", "quero dia 24/09") ===
 if ((getConversation(from)?.mode || null) !== "cancel") {
