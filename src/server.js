@@ -1076,6 +1076,158 @@ if ((getConversation(from)?.mode || null) !== "cancel") {
     console.error("[future-date] erro:", e?.message || e);
   }
 }
+// === FAST-BOOK: cria evento direto quando houver data+hora (sem depender da IA) ===
+try {
+  // Aceita formatos: "Quero agendar nesse horário: 24/09 14:00",
+  // "24/09 14:00", "24-09 9h", "dia 24/09 às 09:30", etc.
+  const raw = String(userText || "").toLowerCase();
+
+  // Captura dd/mm e hora (14:00 ou 14h ou 9:30)
+  const mDate = raw.match(/(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?/i);
+  const mTime = raw.match(/\b(\d{1,2})(?::|h)(\d{2})\b/i) || raw.match(/\b(\d{1,2})h\b/i);
+
+  if (mDate && mTime) {
+    const dd = String(mDate[1]).padStart(2, "0");
+    const mm = String(mDate[2]).padStart(2, "0");
+    let yyyy;
+    if (mDate[3]) {
+      const yy = String(mDate[3]);
+      yyyy = yy.length === 2 ? (2000 + Number(yy)) : Number(yy);
+    } else {
+      yyyy = new Date().getFullYear();
+    }
+
+    let hh = String(mTime[1]).padStart(2, "0");
+    let mi = "00";
+    if (mTime[2]) mi = String(mTime[2]).padStart(2, "0");
+
+    const toParse = `${dd}/${mm} ${hh}:${mi}`;
+    const { found, startISO, endISO } = parseCandidateDateTime(
+      toParse,
+      process.env.TZ || "America/Sao_Paulo"
+    );
+
+    if (found) {
+      // Enriquecer com Nome/Telefone/Motivo/Modalidade
+      const conv = getConversation(from);
+      const { name, phoneFormatted, reason, modality } = extractPatientInfo({
+        payload: p,
+        phone: from,
+        conversation: conv,
+      });
+
+      // Antes de criar, checa conflito/bloqueio
+      const { busy, conflicts } = await isSlotBlockedOrBusy({ startISO, endISO });
+      if (busy) {
+        let msg = "Esse horário acabou de ficar indisponível.";
+        if (conflicts?.length) {
+          const tz = process.env.TZ || "America/Sao_Paulo";
+          const lines = conflicts.map(c => {
+            const when = new Date(c.start);
+            const lbl = when.toLocaleString("pt-BR", { timeZone: tz });
+            return `• ${lbl} — ${c.summary || "Compromisso"}`;
+          });
+          msg += "\n\nConflitos encontrados:\n" + lines.join("\n");
+        }
+
+        // Oferece alternativas próximas e mantém fluxo
+        const alternativas = await listAvailableSlots({
+          fromISO: startISO,
+          days: 3,
+          limit: 7
+        });
+        if (alternativas?.length) {
+          msg += "\n\nPosso te oferecer estes horários:\n" +
+            alternativas.map((s,i)=> `${i+1}) ${s.dayLabel} ${s.label}`).join("\n") +
+            '\n\nResponda com **opção N** (ex.: "opção 3") ou envie **outra data** (ex.: "25/09").';
+          const convMem = ensureConversation(from);
+          convMem.lastSlots = alternativas;
+          convMem.updatedAt = Date.now();
+        } else {
+          msg += "\n\nNos próximos dias não há janelas livres. Posso procurar mais adiante.";
+        }
+        await sendWhatsAppText({ to: from, text: msg });
+        return; // já tratamos
+      }
+
+      // Monta título/descrição/locais
+      const summary = `Consulta (${modality}) — ${name} — ${reason} — ${phoneFormatted}`;
+      const description = [
+        `Paciente: ${name}`,
+        `Telefone: ${phoneFormatted}`,
+        `Motivo: ${reason}`,
+        `Modalidade: ${modality}`,
+        `Origem: WhatsApp (Cristina)`,
+        `#patient_phone:${onlyDigits(phoneFormatted)}`,
+        `#patient_name:${String(name || "").trim().toLowerCase()}`,
+      ].join("\n");
+
+      const location =
+        modality === "Telemedicina"
+          ? "Telemedicina (link será enviado)"
+          : (process.env.CLINIC_ADDRESS || "Clínica");
+
+      await createCalendarEvent({
+        summary,
+        description,
+        startISO,
+        endISO,
+        attendees: [],
+        location,
+        extendedProperties: {
+          private: {
+            patient_phone: onlyDigits(phoneFormatted),
+            patient_name: String(name || "").trim().toLowerCase(),
+            modality
+          }
+        }
+      });
+
+      // Confirma para o paciente e encerra
+      const tz = process.env.TZ || "America/Sao_Paulo";
+      const when = new Date(startISO).toLocaleString("pt-BR", { timeZone: tz, day:"2-digit", month:"2-digit", year:"2-digit", hour:"2-digit", minute:"2-digit" });
+      await sendWhatsAppText({
+        to: from,
+        text: `Perfeito, ${name}! Agendei sua consulta (${modality}) com a Dra. Jenifer para ${when}.`
+      });
+      appendMessage(from, "assistant", `Agendamento confirmado em ${when}.`);
+      return; // NÃO desce para a IA
+    }
+  }
+} catch (e) {
+  console.error("[fast-book] erro:", e?.message || e);
+}
+// === CLARIFICAÇÃO AMIGÁVEL QUANDO NÃO DEU PARA ENTENDER ===
+// Somente fora do modo cancelamento e quando não reconhecemos nada até aqui.
+try {
+  const modeNow = getConversation(from)?.mode || null;
+  const raw = (userText || "").trim().toLowerCase();
+
+  const hasDate = /(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?/.test(raw);
+  const hasTime = /\b(\d{1,2})(?::|h)(\d{2})\b/.test(raw) || /\b(\d{1,2})h\b/.test(raw);
+  const isOption = /^\s*(op[cç][aã]o\s*\d+|\d+)\s*$/.test(raw);
+  const isMore = raw === "mais" || raw === "ver mais" || raw === "mais opções";
+  const isDayOnly = /\b(?:tem\s+)?dia\s+\d{1,2}\b(?!\s*[\/\-]\d)/i.test(raw);
+  const isNextWeekday = /\bpr(?:ó|o)xima\s+(domingo|segunda|ter[çc]a|quarta|quinta|sexta|s[áa]bado)s?\b/i.test(raw);
+  const isCancelOrReschedule = /\b(cancel|cancelar|desmarcar|reagendar|remarcar|adiar|mudar|trocar)\b/i.test(raw);
+
+  if (modeNow !== "cancel" && !hasDate && !hasTime && !isOption && !isMore && !isDayOnly && !isNextWeekday && !isCancelOrReschedule) {
+    const convMem = ensureConversation(from);
+    const hasList = Array.isArray(convMem?.lastSlots) && convMem.lastSlots.length > 0;
+
+    let msg = "Só pra te ajudar melhor: você pode me dizer uma **data** (ex.: 24/09), ou **data e horário** (ex.: 24/09 14:00).";
+    if (hasList) {
+      msg += `\nSe preferir, responda com **opção N** (ex.: "opção 3") com base na lista que enviei.`;
+    }
+    msg += `\nSe quiser **cancelar** ou **remarcar**, é só me dizer também.`;
+
+    await sendWhatsAppText({ to: from, text: msg });
+    appendMessage(from, "assistant", msg);
+    return; // evita cair na IA sem necessidade
+  }
+} catch (e) {
+  console.error("[clarify] erro:", e?.message || e);
+}
 
     // Montagem de contexto para a IA
     const conv = getConversation(from);
