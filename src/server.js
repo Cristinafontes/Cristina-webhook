@@ -959,25 +959,6 @@ try {
   if (convMem?.mode === "retrieve") {
     const ctx = convMem.retrieveCtx || (convMem.retrieveCtx = { phone: "", name: "", list: null, chosen: null });
 
-    // Se paciente respondeu "1", "2"… após listagem
-    const pickM = (userText || "").trim().match(/^\s*(\d{1,2})\s*$/);
-    if (pickM && Array.isArray(ctx.list) && ctx.list.length) {
-      const idx = Number(pickM[1]) - 1;
-      const ev = ctx.list[idx];
-      if (!ev) {
-        await sendWhatsAppText({ to: from, text: "Número inválido. Responda com um dos números da lista." });
-        return;
-      }
-      const yy = new Date(ev.startISO).getFullYear().toString().slice(-2);
-      await sendWhatsAppText({
-        to: from,
-        text: `Certo! Seu agendamento é **${ev.dayLabel}/${yy} às ${ev.timeLabel}** — ${ev.summary || "Consulta"}.`
-      });
-      convMem.mode = null;           // encerra o modo retrieve
-      convMem.retrieveCtx = null;
-      convMem.updatedAt = Date.now();
-      return;
-    }
 
     // Atualiza identidade a partir desta mensagem
     const maybePhone = extractPhoneFromText(userText);
@@ -1030,25 +1011,72 @@ try {
         to: from,
         text: `Encontrei: **${ev.dayLabel}/${yy} às ${ev.timeLabel}** — ${ev.summary || "Consulta"}.`
       });
-      convMem.mode = null;
-      convMem.retrieveCtx = null;
-      convMem.updatedAt = Date.now();
-      return;
+      // Hand-off para a Cristina finalizar
+try {
+  const yy = new Date(ev.startISO).getFullYear().toString().slice(-2);
+  const followUp = await askCristina({
+    userText:
+      `Contexto: o paciente pediu para lembrar o agendamento. ` +
+      `Já informei: ${ev.dayLabel}/${yy} às ${ev.timeLabel} — ${ev.summary || "Consulta"}. ` +
+      `Finalize com acolhimento e ofereça ajuda (reagendar, cancelar, instruções pré-consulta e endereço/telemedicina).`,
+    userPhone: String(from)
+  });
+
+  if (followUp) {
+    appendMessage(from, "assistant", followUp);
+    await sendWhatsAppText({ to: from, text: followUp });
+  }
+} catch (e) {
+  console.error("[retrieve->AI one] erro:", e?.message || e);
+}
+
+// Encerrar o modo retrieve
+convMem.mode = null;
+convMem.retrieveCtx = null;
+convMem.updatedAt = Date.now();
+return;
+
     }
 
-    // Vários: lista (top 5) e espera número
-    const linhas = events.slice(0, 5).map((ev, i) => `${i + 1}) ${ev.dayLabel} ${ev.timeLabel} — ${ev.summary || "Consulta"}`);
-    await sendWhatsAppText({
-      to: from,
-      text:
-        "Encontrei mais de um agendamento no seu nome/telefone. Qual deseja confirmar?\n" +
-        linhas.join("\n") +
-        (events.length > 5 ? `\n... e mais ${events.length - 5}` : "") +
-        `\n\nResponda com o número (ex.: **1**).`
-    });
-    ctx.list = events.slice(0, 10);
-    convMem.updatedAt = Date.now();
-    return;
+    // Vários: apenas informar (sem pedir escolha) e hand-off para a Cristina
+const top = events.slice(0, 5);
+const linhas = top.map((ev, i) => {
+  const yy = new Date(ev.startISO).getFullYear().toString().slice(-2);
+  return `${i + 1}) ${ev.dayLabel}/${yy} — ${ev.timeLabel} — ${ev.summary || "Consulta"}`;
+});
+
+await sendWhatsAppText({
+  to: from,
+  text:
+    "Encontrei agendamentos futuros associados ao seu nome/telefone:\n" +
+    linhas.join("\n") +
+    (events.length > 5 ? `\n... e mais ${events.length - 5}` : "")
+});
+
+// Hand-off para a Cristina finalizar com acolhimento/instruções
+try {
+  const followUp = await askCristina({
+    userText:
+      "Contexto: o paciente pediu para lembrar os agendamentos. " +
+      "Acabei de informar a lista acima. Finalize com acolhimento e ofereça ajuda " +
+      "(reagendar, cancelar, instruções pré-consulta e endereço/telemedicina).",
+    userPhone: String(from)
+  });
+
+  if (followUp) {
+    appendMessage(from, "assistant", followUp);
+    await sendWhatsAppText({ to: from, text: followUp });
+  }
+} catch (e) {
+  console.error("[retrieve->AI multi] erro:", e?.message || e);
+}
+
+// Encerrar o modo retrieve
+convMem.mode = null;
+convMem.retrieveCtx = null;
+convMem.updatedAt = Date.now();
+return;
+
   }
 }
 
