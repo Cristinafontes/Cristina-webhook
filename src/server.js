@@ -735,20 +735,29 @@ if (pickM && Array.isArray(convMem.cancelCtx?.matchList) && convMem.cancelCtx.ma
       ctx.timeHHMM = `${hh}:${mi}`;
     }
 
-    // 3) Se ainda não tenho NENHUM dos 3 (telefone OU nome OU data), peço novamente de forma clara
-    if (!ctx.phone && !ctx.name && !ctx.dateISO) {
-      await sendWhatsAppText({
-        to: from,
-        text:
-          "Para localizar seu agendamento, envie pelo menos **um** dos dados abaixo:\n" +
-          "• **Telefone** (DDD + número)\n" +
-          "• **Nome completo**\n" +
-          "• **Data** (ex.: 26/09) — se souber o horário, melhor ainda (ex.: 09:00)"
-      });
-      return;
-    }
+    // 3) GATE: só seguimos se tiver TELEFONE ou NOME; data/hora sozinha não basta
+if (!ctx.phone && !ctx.name) {
+  // o paciente mandou apenas data/hora ou nada útil → peça identidade
+  await sendWhatsAppText({
+    to: from,
+    text:
+      "Para localizar com segurança, me envie **Telefone** (DDD + número) **e/ou** **Nome completo**.\n" +
+      "Se souber, **data e horário** também me ajudam (ex.: 26/09 09:00)."
+  });
+  return;
+}
 
     // 4) Buscar eventos: se tiver telefone/nome uso o Google; se tiver data/hora, filtro também pela data
+    // Não fazemos busca se não houver identidade
+if (!ctx.phone && !ctx.name) {
+  await sendWhatsAppText({
+    to: from,
+    text:
+      "Preciso de **Telefone** (DDD + número) **e/ou** **Nome completo** para localizar seu agendamento.\n" +
+      "Se tiver, a **data e horário** também ajudam."
+  });
+  return;
+}
     let matches = [];
     try {
       const phoneForLookup = ctx.phone || (normalizePhoneForLookup(conversations.get(from)?.lastKnownPhone) || "");
