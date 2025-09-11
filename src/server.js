@@ -669,6 +669,17 @@ async function handleInbound(req, res) {
   const convMem = getConversation(from);
   if (convMem?.mode === "cancel") {
     const ctx = convMem.cancelCtx || (convMem.cancelCtx = { phone: "", name: "", dateISO: null, timeHHMM: null, chosenEvent: null });
+    // Atalho: se o paciente quiser voltar a agendar/ver horários, saímos do "cancel"
+if (/\b(agendar|marcar|ver\s+hor[aá]rios|quero\s+consulta)\b/i.test(userText || "")) {
+  convMem.mode = null;
+  convMem.after = null;
+  await sendWhatsAppText({
+    to: from,
+    text: "Sem problemas! Vamos seguir com o agendamento. Me diga uma **data** (ex.: 24/09) ou peça **opções**."
+  });
+  return;
+}
+
 // Se paciente respondeu "1", "2", etc. e já existe lista salva → processa aqui
 const pickM = (userText || "").match(/^\s*(\d{1,2})\s*$/);
 if (pickM && Array.isArray(convMem.cancelCtx?.matchList) && convMem.cancelCtx.matchList.length) {
@@ -760,23 +771,30 @@ if (pickM && Array.isArray(convMem.cancelCtx?.matchList) && convMem.cancelCtx.ma
       matches = [];
     }
 
-    // 5) Se nada encontrado, peça o que falta (sem travar)
-    if (!matches.length) {
-      const faltantes = [];
-      if (!ctx.phone) faltantes.push("Telefone");
-      if (!ctx.name)  faltantes.push("Nome");
-      const pedacos =
-        faltantes.length
-          ? `Tente me enviar ${faltantes.join(" e ")} (pode ser só um deles)`
-          : "Se puder, me confirme a **data** (ex.: 26/09) e o **horário** (ex.: 09:00) do agendamento";
-      await sendWhatsAppText({
-        to: from,
-        text:
-          "Não encontrei seu agendamento com as informações atuais.\n" +
-          pedacos + " para eu localizar certinho."
-      });
-      return;
-    }
+    // 5) Se nada encontrado, peça o que falta (sem travar) — deixa claro que data/hora é só filtro
+if (!matches.length) {
+  const faltantes = [];
+  if (!ctx.phone && !ctx.name) {
+    await sendWhatsAppText({
+      to: from,
+      text:
+        "Não localizei seu agendamento só com a data/hora. " +
+        "Para encontrar, me envie **Telefone** (DDD + número) **ou** **Nome completo**. " +
+        "A **data/hora** servem apenas como filtro adicional."
+    });
+  } else {
+    const falta = [];
+    if (!ctx.phone) falta.push("Telefone");
+    if (!ctx.name)  falta.push("Nome");
+    await sendWhatsAppText({
+      to: from,
+      text:
+        (falta.length ? `Falta ${falta.join(" e ")} para eu confirmar com segurança.\n` : "") +
+        "Se puder, confirme também a **data** (ex.: 26/09) e o **horário** (ex.: 09:00) para filtrar melhor."
+    });
+  }
+  return;
+}
 
     // 6) Se múltiplos, lista para escolha
     if (matches.length > 1 && !ctx.chosenEvent) {
@@ -915,6 +933,37 @@ try {
   console.error("[option-pick] erro:", e?.message || e);
 }
     safeLog("INBOUND", req.body);
+    // === Helpers para tolerar erro de digitação nos dias da semana ===
+function simpleLevenshtein(a, b) {
+  a = (a||"").toLowerCase(); b = (b||"").toLowerCase();
+  const dp = Array.from({length: a.length+1}, (_,i)=>Array(b.length+1).fill(0));
+  for (let i=0;i<=a.length;i++) dp[i][0]=i;
+  for (let j=0;j<=b.length;j++) dp[0][j]=j;
+  for (let i=1;i<=a.length;i++) {
+    for (let j=1;j<=b.length;j++) {
+      const cost = a[i-1] === b[j-1] ? 0 : 1;
+      dp[i][j] = Math.min(dp[i-1][j]+1, dp[i][j-1]+1, dp[i-1][j-1]+cost);
+    }
+  }
+  return dp[a.length][b.length];
+}
+const WEEKDAYS_CANON = [
+  ["domingo",0],["segunda",1],["terca",2],["terça",2],["quarta",3],
+  ["quinta",4],["sexta",5],["sabado",6],["sábado",6]
+];
+function matchWeekdayFuzzy(token){
+  if(!token) return null;
+  const norm = token.normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase();
+  let best = null;
+  for(const [w,idx] of WEEKDAYS_CANON){
+    const cand = w.normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase();
+    const d = simpleLevenshtein(norm, cand);
+    const ok = d <= 1 || (cand.length >= 6 && d <= 2);
+    if(ok && (!best || d < best.d)) best = {d, idx};
+  }
+  return best ? best.idx : null;
+}
+
 // === ENTENDE "tem dia 19?" (sem mês) e "próxima terça?" (dia da semana) ===
 try {
   if ((getConversation(from)?.mode || null) !== "cancel") {
@@ -929,47 +978,20 @@ try {
     // evita conflito com dd/mm já tratado depois (não pode ter "/" nem "-")
     const mDayOnly = raw.match(/\b(?:tem\s+)?dia\s+(\d{1,2})\b(?!\s*[\/\-]\d)/i);
 
-    // 2) "próxima terça?" (dia da semana)
-    const mNextWeekday = raw.match(/\bpr(?:ó|o)xima\s+(domingo|segunda|ter[çc]a|quarta|quinta|sexta|s[áa]bado)s?\b/i);
+    // 2) "próxima terça?" (dia da semana) com tolerância a erro
+let targetDate = targetDate || null; // mantém se já veio do "dia 19"
+const mNextWeekdayRaw = raw.match(/\bpr(?:ó|o)xima\s+([a-zçáéíóúãõâêô]+)\b/i);
 
-    let targetDate = null;
-
-    if (mDayOnly) {
-      // Próximo dia do mês >= hoje; se já passou, mês seguinte; se não existir (ex.: 31/04), avança até existir
-      const wantDay = Math.min(31, Number(mDayOnly[1]));
-      const now = new Date();
-      // tenta este mês
-      let y = now.getFullYear();
-      let m = now.getMonth(); // 0-11
-      let candidate = new Date(y, m, wantDay, 0, 0, 0, 0);
-
-      // se o "dia" retrocedeu (não existe esse dia neste mês) ou já passou hoje, vamos avançando mês a mês até achar
-      const todayStart = startOfDay(now).getTime();
-      let guard = 0;
-      while (
-        (candidate.getDate() !== wantDay) || // data "rolou" para outro dia => mês não tem esse dia
-        (candidate.getTime() < todayStart)    // já passou (é antes de hoje 00:00)
-      ) {
-        m += 1;
-        if (m > 11) { m = 0; y += 1; }
-        candidate = new Date(y, m, wantDay, 0, 0, 0, 0);
-        if (++guard > 24) break; // guarda-fio extremo
-      }
-      targetDate = candidate;
-    }
-
-    if (!targetDate && mNextWeekday) {
-      const wkMap = {
-        "domingo": 0, "segunda": 1, "terça": 2, "terca": 2,
-        "quarta": 3, "quinta": 4, "sexta": 5, "sábado": 6, "sabado": 6
-      };
-      const want = wkMap[mNextWeekday[1].normalize("NFD").replace(/[\u0300-\u036f]/g, "")];
-      const now = new Date();
-      const todayDow = now.getDay(); // 0=domingo
-      let add = (want - todayDow + 7) % 7;
-      if (add === 0) add = 7; // "próxima terça" nunca é hoje; é a da semana que vem
-      targetDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + add, 0, 0, 0, 0);
-    }
+if (!targetDate && mNextWeekdayRaw) {
+  const wantIdx = matchWeekdayFuzzy(mNextWeekdayRaw[1]);
+  if (wantIdx !== null) {
+    const now = new Date();
+    const todayDow = now.getDay(); // 0=domingo
+    let add = (wantIdx - todayDow + 7) % 7;
+    if (add === 0) add = 7; // "próxima" nunca é hoje
+    targetDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + add, 0, 0, 0, 0);
+  }
+}
 
     if (targetDate) {
       // Listar opções deste dia
@@ -1011,6 +1033,45 @@ try {
 } catch (e) {
   console.error("[day-only / next-weekday] erro:", e?.message || e);
 }
+// === FALLBACK suave de disponibilidade quando não casou data/semana ===
+try {
+  if ((getConversation(from)?.mode || null) !== "cancel") {
+    const probe = String(userText || "").toLowerCase();
+    const looksLikeAvailabilityAsk =
+      /\btem\b/.test(probe) ||
+      /\bproxima\b|\bpróxima\b/.test(probe) ||
+      /\bdomingo|segunda|terca|terça|quarta|quinta|sexta|sabado|sábado\b/.test(probe);
+
+    const noExplicitDate =
+      !/\b(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?\b/.test(probe);
+
+    if (looksLikeAvailabilityAsk && noExplicitDate) {
+      const slots = await listAvailableSlots({
+        fromISO: new Date().toISOString(),
+        days: 7,
+        limit: 10
+      });
+
+      const convMem = ensureConversation(from);
+      convMem.lastSlots = slots;
+      convMem.updatedAt = Date.now();
+
+      let msg;
+      if (!slots.length) {
+        msg = "Entendi que você quer disponibilidade, mas não reconheci a data específica. " +
+              "Nos próximos dias não há horários livres. Se preferir, me diga uma **data** (ex.: 24/09).";
+      } else {
+        const linhas = slots.map((s,i)=> `${i+1}) ${s.dayLabel} ${s.label}`).join("\n");
+        msg = "Entendi que você quer disponibilidade. Seguem **opções próximas**:\n" +
+              linhas +
+              '\n\nResponda com **opção N** (ex.: "opção 3") ou informe **data e horário** (ex.: "24/09 14:00").';
+      }
+      appendMessage(from, "assistant", msg);
+      await sendWhatsAppText({ to: from, text: msg });
+      return;
+    }
+  }
+} catch(e){ console.error("[availability-fallback] erro:", e?.message || e); }
 
 // === PEDIDO DE DATA ESPECÍFICA (ex.: "tem dia 24/09?", "quero dia 24/09") ===
 if ((getConversation(from)?.mode || null) !== "cancel") {
