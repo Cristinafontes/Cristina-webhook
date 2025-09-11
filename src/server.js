@@ -918,6 +918,127 @@ try {
     return; // não deixa cair em outras regras
   }
 }
+// === RECUPERAR INFORMAÇÃO DO AGENDAMENTO (quando o paciente esqueceu data/horário) ===
+{
+  // Dispara apenas se NÃO estiver no modo cancelamento
+  const convMem = getConversation(from);
+  if ((convMem?.mode || null) !== "cancel") {
+    const txt = (userText || "").toLowerCase();
+
+    // Intenções típicas de "lembrar/consultar meu agendamento"
+    const retrieveIntent =
+      /\b( (quando\s+(é|sera|será)\s+minha\s+consulta)
+         |(qual\s+(é\s+)?(o\s+)?hor[aá]rio\s+da\s+minha\s+consulta)
+         |(que\s+horas\s+([ée])\s+a?\s*consulta)
+         |(que\s+dia\s+marquei)
+         |(meu\s+agendamento)
+         |(minha\s+consulta)
+         |(esqueci\s+(a\s+)?data(\s+e\s+hor[aá]rio)?)
+         |(esqueci\s+o\s+hor[aá]rio)
+         |(lembrar\s+(da\s+)?consulta)
+         |(confirmar\s+meu\s+hor[aá]rio)
+       )\b/x;
+
+    if (retrieveIntent.test(txt)) {
+      // Tenta extrair Nome/Telefone do histórico/payload
+      const conv = getConversation(from);
+      const info = extractPatientInfo({ payload: p, phone: from, conversation: conv });
+      const phoneForLookup = normalizePhoneForLookup(info?.phoneFormatted || from || "");
+      const nameForLookup  = (info?.name || "").trim();
+
+      // Se não tenho identidade mínima, peço
+      if (!phoneForLookup && !nameForLookup) {
+        await sendWhatsAppText({
+          to: from,
+          text:
+            "Para localizar seu agendamento com segurança, me envie **Telefone** (DDD + número) **e/ou** **Nome completo**.\n" +
+            "Com isso eu te informo **dia e horário** certinho."
+        });
+        return;
+      }
+
+      // Busca eventos do paciente (passado recente e, principalmente, próximos)
+      let events = [];
+      try {
+        const rawEvents = await findPatientEvents({
+          phone: phoneForLookup || "",
+          name:  nameForLookup  || "",
+          daysBack: 90,
+          daysAhead: 365
+        });
+
+        // Mantém só os futuros (ou começando agora)
+        const now = Date.now();
+        events = (rawEvents || []).filter(ev => {
+          const t = ev.startISO ? new Date(ev.startISO).getTime() : 0;
+          return t >= now - 5 * 60 * 1000; // tolerância de 5 min
+        });
+
+        // Ordena por data/hora
+        events.sort((a, b) => (new Date(a.startISO) - new Date(b.startISO)));
+      } catch (e) {
+        console.error("[retrieve-lookup] erro:", e?.message || e);
+      }
+
+      // Respostas
+      if (!events.length) {
+        await sendWhatsAppText({
+          to: from,
+          text:
+            "Não localizei um agendamento futuro com os dados informados. " +
+            "Se puder, confirme **Telefone** (DDD + número) ou **Nome completo** como está no agendamento."
+        });
+        return;
+      }
+
+      if (events.length === 1) {
+        const ev = events[0];
+        const yy = new Date(ev.startISO).getFullYear().toString().slice(-2);
+        await sendWhatsAppText({
+          to: from,
+          text: `Encontrei: **${ev.dayLabel}/${yy} às ${ev.timeLabel}** — ${ev.summary || "Consulta"}.\nPosso te ajudar com mais alguma coisa?`
+        });
+        return;
+      }
+
+      // Vários próximos agendamentos: lista para o paciente
+      const linhas = events.slice(0, 5).map((ev, i) => `${i + 1}) ${ev.dayLabel} ${ev.timeLabel} — ${ev.summary || "Consulta"}`);
+      await sendWhatsAppText({
+        to: from,
+        text:
+          "Encontrei mais de um agendamento futuro vinculado ao seu nome/telefone. Qual deles você quer confirmar?\n" +
+          linhas.join("\n") +
+          (events.length > 5 ? `\n... e mais ${events.length - 5}` : "") +
+          `\n\nResponda com o número (ex.: **1**).`
+      });
+
+      // Guarda essa lista em memória para permitir “1”, “2”, etc.
+      const cm = ensureConversation(from);
+      cm.rememberList = { type: "retrieve", items: events.slice(0, 10) };
+      cm.updatedAt = Date.now();
+      return;
+    }
+
+    // Se o paciente respondeu apenas "1", "2" etc. depois da listagem de recuperação
+    if (/^\s*\d{1,2}\s*$/.test(txt) && convMem?.rememberList?.type === "retrieve") {
+      const idx = Math.max(0, Math.min(Number(txt.trim()) - 1, convMem.rememberList.items.length - 1));
+      const ev = convMem.rememberList.items[idx];
+      if (!ev) {
+        await sendWhatsAppText({ to: from, text: "Número inválido. Responda com um dos números listados." });
+        return;
+      }
+      const yy = new Date(ev.startISO).getFullYear().toString().slice(-2);
+      await sendWhatsAppText({
+        to: from,
+        text: `Certo! Seu agendamento selecionado é **${ev.dayLabel}/${yy} às ${ev.timeLabel}** — ${ev.summary || "Consulta"}.`
+      });
+      // Não limpa nada crítico; apenas remove a lista para evitar confusão
+      convMem.rememberList = null;
+      convMem.updatedAt = Date.now();
+      return;
+    }
+  }
+}
 
 // === ATALHO: "opção N" + "mais" (somente fora do modo cancelamento) ===
 try {
