@@ -620,7 +620,42 @@ async function handleInbound(req, res) {
   resetConversation(from);
   return;
 }
-    
+    // === INTENÇÃO: RECUPERAR/LEMBRAR AGENDAMENTO (modo "retrieve") ===
+{
+  const convMem = ensureConversation(from);
+  const raw = (userText || "").toLowerCase();
+
+  // Heurística simples e robusta: pede "consulta/agendamento" + um verbo de consulta
+  const wantRetrieve =
+    /\b(consulta|agendamento)\b/.test(raw) &&
+    /\b(quando|qual|horario|horário|que\s*horas|esqueci|lembrar|confirmar)\b/.test(raw);
+
+  if (wantRetrieve) {
+    convMem.mode = "retrieve";
+    convMem.retrieveCtx = { phone: "", name: "", list: null, chosen: null };
+    convMem.updatedAt = Date.now();
+
+    // Tenta já pegar dados desta própria mensagem
+    const maybePhone = extractPhoneFromText(userText);
+    if (maybePhone) convMem.retrieveCtx.phone = normalizePhoneForLookup(maybePhone);
+
+    const maybeName = (extractNameFromText?.(userText) || "").trim();
+    if (maybeName) convMem.retrieveCtx.name = maybeName;
+
+    // Se ainda não tenho identidade mínima, peço e encerro este turno
+    if (!convMem.retrieveCtx.phone && !convMem.retrieveCtx.name) {
+      await sendWhatsAppText({
+        to: from,
+        text:
+          "Certo! Para localizar com segurança, me envie **Telefone** (DDD + número) e/ou **Nome completo**.\n" +
+          "Assim eu te informo **dia e horário** certinho."
+      });
+      return;
+    }
+    // Se já tenho algum dado, o bloco do "modo retrieve" (abaixo) continua o fluxo.
+  }
+}
+
 // === INTENÇÃO DE CANCELAMENTO / REAGENDAMENTO ===
 {
   const convMem = ensureConversation(from);
@@ -918,11 +953,109 @@ try {
     return; // não deixa cair em outras regras
   }
 }
+// === MODO RECUPERAR AGENDAMENTO (retrieve): usa nome/telefone e informa data/horário ===
+{
+  const convMem = getConversation(from);
+  if (convMem?.mode === "retrieve") {
+    const ctx = convMem.retrieveCtx || (convMem.retrieveCtx = { phone: "", name: "", list: null, chosen: null });
+
+    // Se paciente respondeu "1", "2"… após listagem
+    const pickM = (userText || "").trim().match(/^\s*(\d{1,2})\s*$/);
+    if (pickM && Array.isArray(ctx.list) && ctx.list.length) {
+      const idx = Number(pickM[1]) - 1;
+      const ev = ctx.list[idx];
+      if (!ev) {
+        await sendWhatsAppText({ to: from, text: "Número inválido. Responda com um dos números da lista." });
+        return;
+      }
+      const yy = new Date(ev.startISO).getFullYear().toString().slice(-2);
+      await sendWhatsAppText({
+        to: from,
+        text: `Certo! Seu agendamento é **${ev.dayLabel}/${yy} às ${ev.timeLabel}** — ${ev.summary || "Consulta"}.`
+      });
+      convMem.mode = null;           // encerra o modo retrieve
+      convMem.retrieveCtx = null;
+      convMem.updatedAt = Date.now();
+      return;
+    }
+
+    // Atualiza identidade a partir desta mensagem
+    const maybePhone = extractPhoneFromText(userText);
+    if (maybePhone) ctx.phone = normalizePhoneForLookup(maybePhone);
+    const maybeName = (extractNameFromText?.(userText) || "").trim();
+    if (maybeName) ctx.name = maybeName;
+
+    // Sem identidade suficiente → pedir de forma acolhedora
+    if (!ctx.phone && !ctx.name) {
+      await sendWhatsAppText({
+        to: from,
+        text:
+          "Para eu localizar aqui, me envie **Telefone** (DDD + número) **e/ou** **Nome completo** como está no agendamento."
+      });
+      return;
+    }
+
+    // Busca no calendário (somente próximos/atuais)
+    let events = [];
+    try {
+      const rawEvents = await findPatientEvents({
+        phone: ctx.phone || "",
+        name:  ctx.name  || "",
+        daysBack: 365,
+        daysAhead: 365
+      });
+      const now = Date.now();
+      events = (rawEvents || [])
+        .filter(ev => (ev.startISO ? new Date(ev.startISO).getTime() : 0) >= now - 5 * 60 * 1000)
+        .sort((a, b) => new Date(a.startISO) - new Date(b.startISO));
+    } catch (e) {
+      console.error("[retrieve-mode] erro:", e?.message || e);
+      events = [];
+    }
+
+    if (!events.length) {
+      await sendWhatsAppText({
+        to: from,
+        text:
+          "Não localizei agendamento **futuro** com os dados informados. " +
+          "Pode confirmar **Telefone** (DDD + número) ou **Nome completo** como está no agendamento?"
+      });
+      return;
+    }
+
+    if (events.length === 1) {
+      const ev = events[0];
+      const yy = new Date(ev.startISO).getFullYear().toString().slice(-2);
+      await sendWhatsAppText({
+        to: from,
+        text: `Encontrei: **${ev.dayLabel}/${yy} às ${ev.timeLabel}** — ${ev.summary || "Consulta"}.`
+      });
+      convMem.mode = null;
+      convMem.retrieveCtx = null;
+      convMem.updatedAt = Date.now();
+      return;
+    }
+
+    // Vários: lista (top 5) e espera número
+    const linhas = events.slice(0, 5).map((ev, i) => `${i + 1}) ${ev.dayLabel} ${ev.timeLabel} — ${ev.summary || "Consulta"}`);
+    await sendWhatsAppText({
+      to: from,
+      text:
+        "Encontrei mais de um agendamento no seu nome/telefone. Qual deseja confirmar?\n" +
+        linhas.join("\n") +
+        (events.length > 5 ? `\n... e mais ${events.length - 5}` : "") +
+        `\n\nResponda com o número (ex.: **1**).`
+    });
+    ctx.list = events.slice(0, 10);
+    convMem.updatedAt = Date.now();
+    return;
+  }
+}
 
 // === ATALHO: "opção N" + "mais" (somente fora do modo cancelamento) ===
 try {
   const convMem = getConversation(from);
-  if (convMem?.mode === "cancel") {
+  if (convMem?.mode === "cancel" || convMem?.mode === "retrieve") {
     // ignorar durante cancelamento
   } else {
     const txt = (userText || "").trim().toLowerCase();
