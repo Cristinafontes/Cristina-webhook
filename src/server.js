@@ -89,6 +89,16 @@ const MEMORY_MAX_MESSAGES = Number(process.env.MEMORY_MAX_MESSAGES || 20);
 const MAX_CONTEXT_CHARS = Number(process.env.MAX_CONTEXT_CHARS || 20000);
 
 const conversations = new Map();
+// Identidade por conversa (nome/telefone confiáveis e estáveis)
+function getIdentity(phone) {
+  const c = getConversation(phone);
+  return (c && c.identity) ? c.identity : { name: "", phone: "" };
+}
+function setIdentity(phone, partial) {
+  const c = ensureConversation(phone);
+  c.identity = { ...(c.identity || { name: "", phone: "" }), ...(partial || {}) };
+  c.updatedAt = nowMs();
+}
 
 function nowMs() { return Date.now(); }
 
@@ -254,6 +264,8 @@ function extractReasonChoice(text) {
 }
 
 function extractPatientInfo({ payload, phone, conversation }) {
+  const convKey =
+  (payload?.sender?.phone || payload?.source || "").toString().trim(); 
   const msgs = conversation?.messages || [];
 
 // ====== NOME (prioriza texto digitado pelo paciente; fallback: nome do WhatsApp) ======
@@ -294,6 +306,10 @@ const isLikelyNameLocal = (s) => {
 const extractNameLocal = (text) => {
   if (!text) return null;
   const t = String(text).trim();
+// Confirmações curtas NÃO são nome
+if (/^(correto|correta|certo|isso|sim|ok|perfeito|confirmo|confirmada|confirmado)$/i.test(t)) {
+  return null;
+}
 
   // 1) "Nome: Fulano" / "Nome completo: Fulana"
   const labeled = t.match(/^\s*nome(?:\s+completo)?\s*[:\-]\s*([^\n]+)$/im);
@@ -309,9 +325,11 @@ const extractNameLocal = (text) => {
   // 3) Linha isolada com possível nome
   const lines = t.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
   for (const line of lines) {
-    if (/^[A-Za-zÀ-ÿ'’. -]+$/.test(line) && isLikelyNameLocal(line)) {
-      return toTitleCaseLocal(line);
-    }
+    const parts = line.split(/\s+/).filter(Boolean);
+if (parts.length >= 2 && /^[A-Za-zÀ-ÿ'’. -]+$/.test(line) && isLikelyNameLocal(line)) {
+  return toTitleCaseLocal(line);
+}
+
   }
 
   // 4) Nome embutido em frase (ex.: "agendar consulta com Jessica Oliveira dia 23/09")
@@ -351,15 +369,22 @@ if (!nameFromUser) {
   ) + "";
   nameFromUser = extractNameLocal(lastText);
 }
+const prevId = getIdentity(convKey);
 
-// 3) Decide o nome final
+// 3) Decide o nome final (preferência: user -> identidade fixa -> sender)
 if (nameFromUser && isLikelyNameLocal(nameFromUser)) {
   name = nameFromUser.trim();
+} else if (prevId.name) {
+  name = prevId.name;
 } else {
-  // fallback mais seguro
   const senderName = (payload?.sender?.name || "").toString().trim();
   name = isLikelyNameLocal(senderName) ? senderName : "Paciente (WhatsApp)";
 }
+// Se o nome é "bom" (2+ palavras) e não é o placeholder, fixa na identidade
+if (name && name.split(/\s+/).filter(Boolean).length >= 2 && name !== "Paciente (WhatsApp)") {
+  setIdentity(convKey, { name });
+}
+
 
 // (opcional) log para ver nos Deploy Logs
 console.log("[NAME PICKED]", name);
@@ -380,8 +405,25 @@ console.log("[NAME PICKED]", name);
     ) + "";
     phoneFromUser = extractPhoneFromText(lastText);
   }
-  const rawPhone = phoneFromUser || phone || payload?.sender?.phone || payload?.source;
+  const rawPhone =
+  phoneFromUser ||
+  prevId?.phone ||           // ← usa o telefone já salvo
+  phone ||
+  payload?.sender?.phone ||
+  payload?.source;
+
   const phoneFormatted = formatBrazilPhone(rawPhone);
+// 🔒 Fixa telefone "bom" na identidade da conversa
+const digits = (phoneFormatted || "").replace(/\D/g, "");
+
+// Só grava se tiver pelo menos 10 dígitos (fixo) ou 11 (celular)
+if (digits.length >= 10) {
+  // Se já existe um telefone salvo, só substitui se o novo for "melhor" (mais dígitos)
+  const current = (prevId?.phone || "").replace(/\D/g, "");
+  if (!current || digits.length > current.length) {
+    setIdentity(convKey, { phone: phoneFormatted });
+  }
+}
 
   // ====== MOTIVO (somente duas opções) ======
   let reason = null;
