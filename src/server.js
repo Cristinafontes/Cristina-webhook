@@ -674,9 +674,12 @@ if (ctx.awaitingConfirm) {
   const no  = /\b(n[aã]o|negativo|melhor n[aã]o|cancelar n[aã]o)\b/i.test(userText || "");
 
   if (yes && ctx.chosenEvent) {
-    // segue para o cancelamento (deixa cair no bloco "Cancelar no Google")
-    ctx.awaitingConfirm = false;
-  } else if (no) {
+  // confirmou: destrava confirmação e marca flag permanente
+  ctx.awaitingConfirm = false;
+  ctx.confirmed = true;
+  convMem.updatedAt = Date.now();
+  // segue o fluxo adiante até o bloco "Cancelar no Google"
+} else if (no) {
     // não quer mais cancelar → volta para IA ajudar
     ctx.awaitingConfirm = false;
     convMem.mode = null;
@@ -840,7 +843,7 @@ if (!ctx.phone && !ctx.name) {
       return;
     }
 // 8) Confirma ANTES de cancelar (novo passo)
-if (ctx.chosenEvent && !ctx.awaitingConfirm) {
+if (ctx.chosenEvent && !ctx.awaitingConfirm && !ctx.confirmed) {
   const who = (ctx.name && ctx.name !== "Paciente (WhatsApp)") ? `, ${ctx.name}` : "";
   const dd = ctx.chosenEvent.dayLabel;
   const hhmm = ctx.chosenEvent.timeLabel;
@@ -859,9 +862,14 @@ if (ctx.chosenEvent && !ctx.awaitingConfirm) {
 }
 
     // 8) Cancelar no Google (executa somente após confirmação "sim")
+if (!ctx.confirmed) {
+  // ainda não confirmou; não executa cancelamento
+  return;
+}
 try {
   await cancelCalendarEvent({ eventId: ctx.chosenEvent.id });
 } catch (e) {
+
   console.error("[cancel-google] erro:", e?.message || e);
   await sendWhatsAppText({
     to: from,
