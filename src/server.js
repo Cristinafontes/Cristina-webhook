@@ -182,17 +182,29 @@ function toTitleCase(s) {
 
 // Verifica se a string "parece" um nome de pessoa
 function isLikelyName(s) {
-  const words = String(s || "").trim().split(/\s+/);
-  if (words.length < 2 || words.length > 6) return false;
+  const v = String(s || "").trim();
+  if (!v) return false;
 
+  // rejeita números / símbolos estranhos
+  if ((v.match(/\d/g) || []).length >= 1) return false;
+  if (!/^[A-Za-zÀ-ÿ'’. -]+$/.test(v)) return false;
+
+  const parts = v.split(/\s+/).filter(Boolean);
+  // *** agora exige no mínimo 2 palavras ***
+  if (parts.length < 2 || parts.length > 6) return false;
+
+  // blacklist forte de termos que não podem estar em nome
+  const BAN = /\b(avalia[cç][aã]o|pr[eé][-\s]?anest|anestesia|medicina|dor|consulta|retorno|hor[áa]rio|modalidade|telefone|idade|end(?:ere[cç]o)?|paciente|motivo|preop|pré|pre)\b/i;
+  if (BAN.test(v)) return false;
+
+  // partículas comuns são ok (da, de, dos, e...)
   const particle = /^(da|de|do|das|dos|e|d['’]?)$/i;
-  for (const w of words) {
+  for (const w of parts) {
     if (particle.test(w)) continue;
     if (!/^[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'’.\-]*$/.test(w)) return false;
   }
   return true;
 }
-// Lê nome a partir de texto, rejeitando frases do tipo "quero presencial" etc.
 function extractNameFromText(text) {
   if (!text) return null;
   const t = String(text);
@@ -271,19 +283,21 @@ const isLikelyNameLocal = (s) => {
   if (!s) return false;
   const v = String(s).trim();
 
+  // rejeita números e caracteres inválidos
   if ((v.match(/\d/g) || []).length >= 1) return false;
   if (v.length < 3 || v.length > 80) return false;
   if (!/^[A-Za-zÀ-ÿ'’. -]+$/.test(v)) return false;
 
   const parts = v.split(/\s+/).filter(Boolean);
-  if (parts.length < 1 || parts.length > 5) return false;
+  // *** agora exige no mínimo 2 palavras ***
+  if (parts.length < 2 || parts.length > 6) return false;
 
-  // bloqueia frases comuns que não são nome
-  const BAD =
-    /\b(agendar|agendo|agenda|agendamento|marcar|marque|consulta|consultar|presencial|telemedicina|teleconsulta|quero|querer|vou|prefer(ia|o)|confirm(ar|o)|avaliac[aã]o|pre[\s-]?anest|anestesia|idade|telefone|motivo|endere[cç]o|data|dia|ent[aã]o|às)\b/i;
-  if (BAD.test(v)) return false;
+  // blacklist reforçada
+  const BAN =
+    /\b(avalia[cç][aã]o|pr[eé][-\s]?anest|anestesia|medicina|dor|consulta|retorno|hor[áa]rio|modalidade|telefone|idade|end(?:ere[cç]o)?|paciente|motivo|preop|pré|pre)\b/i;
+  if (BAN.test(v)) return false;
 
-  // dias da semana e meses
+  // dias e meses não são nome
   const WEEKDAYS = /\b(domingo|segunda|ter[cç]a|quarta|quinta|sexta|s[áa]bado)s?\b/i;
   const MONTHS   = /\b(janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\b/i;
   if (WEEKDAYS.test(v) || MONTHS.test(v)) return false;
@@ -359,6 +373,10 @@ if (nameFromUser && isLikelyNameLocal(nameFromUser)) {
   // fallback mais seguro
   const senderName = (payload?.sender?.name || "").toString().trim();
   name = isLikelyNameLocal(senderName) ? senderName : "Paciente (WhatsApp)";
+}
+// *** hardening final: exige 2+ palavras mesmo após escolha ***
+if (name && name.split(/\s+/).filter(Boolean).length < 2) {
+  name = "Paciente (WhatsApp)";
 }
 
 // (opcional) log para ver nos Deploy Logs
@@ -805,14 +823,35 @@ if (pickM && Array.isArray(convMem.cancelCtx?.matchList) && convMem.cancelCtx.ma
   }
 }
 
-    // 1) Tentar extrair telefone e nome do texto livre
-    // telefone
-    const maybePhone = extractPhoneFromText(userText);
-    if (maybePhone) ctx.phone = normalizePhoneForLookup(maybePhone);
+    // 1) Tentar extrair telefone e nome do texto livre (último dado prevalece)
+// telefone
+const maybePhone = extractPhoneFromText(userText);
+if (maybePhone) {
+  ctx.phone = normalizePhoneForLookup(maybePhone);
 
-    // nome (reaproveita seu extrator robusto)
-    const candidateName = (extractNameFromText?.(userText) || "").trim();
-    if (candidateName) ctx.name = candidateName;
+  // *** reset defensivo ao trocar telefone ***
+  ctx.dateISO = null;
+  ctx.timeHHMM = null;
+  ctx.chosenEvent = null;
+  ctx.matchList = [];
+  ctx.awaitingConfirm = false;
+  ctx.confirmed = false;
+}
+
+// nome (reaproveita seu extrator robusto)
+const candidateNameRaw = extractNameFromText?.(userText);
+const candidateName = (candidateNameRaw || "").trim();
+if (candidateName) {
+  ctx.name = candidateName;
+
+  // *** reset defensivo ao trocar nome ***
+  ctx.dateISO = null;
+  ctx.timeHHMM = null;
+  ctx.chosenEvent = null;
+  ctx.matchList = [];
+  ctx.awaitingConfirm = false;
+  ctx.confirmed = false;
+}
 
     // 2) Tentar extrair data/hora (aceita "26/09", "26/09 09:00", "26-09 9h")
     const mDate = userText.match(/(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?/);
