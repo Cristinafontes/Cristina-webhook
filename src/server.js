@@ -662,6 +662,97 @@ await sendWhatsAppText({
 return;
   }
 }
+// ====== [IDENTIDADE DO PACIENTE] Helpers de comparação por telefone/nome ======
+function normalizeStrLite(s) {
+  return String(s || "")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase().replace(/\s+/g, " ")
+    .trim();
+}
+function strip55(digits) {
+  const d = onlyDigits(digits);
+  if (!d) return "";
+  return d.startsWith("55") ? d.slice(2) : d;
+}
+function phonesEqual(a, b) {
+  const A = strip55(a); // nacional (10-11)
+  const B = strip55(b);
+  if (!A || !B) return false;
+  // compara últimos 11; se não houver, últimos 10
+  const tail = Math.max(10, Math.min(11, Math.max(A.length, B.length)));
+  return A.slice(-tail) === B.slice(-tail);
+}
+
+// varre possíveis telefones/nome dentro do evento do Google Calendar
+function extractPhonesFromEvent(ev) {
+  const out = new Set();
+  const add = (v) => { const d = onlyDigits(v); if (d) out.add(d); };
+
+  // extendedProperties.private.patient_phone
+  const pvt = ev?.extendedProperties?.private || {};
+  if (pvt.patient_phone) add(pvt.patient_phone);
+
+  // descrição (marca #patient_phone:XXXXXXXX)
+  if (ev?.description) {
+    const m = ev.description.match(/#patient_phone:([0-9]+)/i);
+    if (m?.[1]) add(m[1]);
+    // fallback: captura blocos de 10+ dígitos
+    const all = ev.description.match(/\b\d{10,13}\b/g);
+    (all || []).forEach(add);
+  }
+
+  // título pode ter telefone
+  if (ev?.summary) {
+    const all = ev.summary.match(/\b\d{10,13}\b/g);
+    (all || []).forEach(add);
+  }
+
+  return Array.from(out);
+}
+
+function extractNamesFromEvent(ev) {
+  const out = new Set();
+  const add = (v) => { const n = normalizeStrLite(v); if (n) out.add(n); };
+
+  // extendedProperties.private.patient_name
+  const pvt = ev?.extendedProperties?.private || {};
+  if (pvt.patient_name) add(pvt.patient_name);
+
+  // descrição "Paciente: Fulano"
+  if (ev?.description) {
+    const m = ev.description.match(/^\s*Paciente:\s*(.+)$/im);
+    if (m?.[1]) add(m[1]);
+    const mTag = ev.description.match(/#patient_name:([^\n\r]+)/i);
+    if (mTag?.[1]) add(mTag[1]);
+  }
+
+  // título "Consulta (...) — Nome — ..."
+  if (ev?.summary) {
+    // pega o trecho entre travessões como possível nome
+    const parts = ev.summary.split("—").map(s => s.trim());
+    for (const part of parts) {
+      if (part && /[A-Za-zÀ-ÿ]/.test(part)) add(part);
+    }
+  }
+  return Array.from(out);
+}
+
+function eventMatchesIdentity(ev, { phone, name }) {
+  // Se fornecer telefone, ele DEVE bater
+  if (phone) {
+    const evPhones = extractPhonesFromEvent(ev);
+    const okPhone = evPhones.some(p => phonesEqual(p, phone));
+    if (!okPhone) return false;
+  }
+  // Se fornecer nome, ele DEVE bater
+  if (name) {
+    const target = normalizeStrLite(name);
+    const evNames = extractNamesFromEvent(ev);
+    const okName = evNames.some(n => n === target);
+    if (!okName) return false;
+  }
+  return true; // passou pelos filtros informados
+}
 
 // === MODO CANCELAMENTO: coletar dados (telefone/nome/data) e cancelar com base em 1+ campos ===
 {
@@ -750,56 +841,65 @@ if (!ctx.phone && !ctx.name) {
   return;
 }
 
-    // 4) Buscar eventos: se tiver telefone/nome uso o Google; se tiver data/hora, filtro também pela data
-    // Não fazemos busca se não houver identidade
+    // 4) Buscar eventos: identidade (Telefone e/ou Nome) é obrigatória; Data/Hora são filtros adicionais
 if (!ctx.phone && !ctx.name) {
   await sendWhatsAppText({
     to: from,
     text:
       "Preciso de **Telefone** (DDD + número) **e/ou** **Nome completo** para localizar seu agendamento.\n" +
-      "Se tiver, a **data e horário** também ajudam."
+      "Se tiver, **data** e **horário** ajudam como filtros (ex.: 26/09 09:00)."
   });
   return;
 }
-    let matches = [];
-    try {
-      const phoneForLookup = ctx.phone || (normalizePhoneForLookup(conversations.get(from)?.lastKnownPhone) || "");
-      const nameForLookup  = ctx.name  || "";
-      const rawEvents = await findPatientEvents({
-        phone: phoneForLookup,
-        name:  nameForLookup,
-        daysBack: 180,
-        daysAhead: 365
-      });
 
-      // Filtro por data/hora se informado
-      if (ctx.dateISO) {
-        const dayStart = new Date(ctx.dateISO);
-        const dayEnd   = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+let matches = [];
+try {
+  const phoneForLookup = ctx.phone || (normalizePhoneForLookup(conversations.get(from)?.lastKnownPhone) || "");
+  const nameForLookup  = ctx.name  || "";
 
-        matches = rawEvents.filter(ev => {
-          const dt = ev.startISO ? new Date(ev.startISO) : null;
-          if (!dt) return false;
-          if (dt < dayStart || dt >= dayEnd) return false;
-          if (ctx.timeHHMM) {
-            const hh = String(dt.getHours()).padStart(2, "0");
-            const mi = String(dt.getMinutes()).padStart(2, "0");
-            const hhmm = `${hh}:${mi}`;
-            // tolerância de 15 min: aproxima por string exata OU arredonda próximo
-            if (hhmm !== ctx.timeHHMM) {
-              const diff = Math.abs(dt.getTime() - new Date(`${dayStart.toISOString().slice(0,10)}T${ctx.timeHHMM}:00`).getTime());
-              if (diff > 15 * 60 * 1000) return false;
-            }
-          }
-          return true;
-        });
-      } else {
-        matches = rawEvents;
+  // 4.1) Busca ampla por paciente no período
+  const rawEvents = await findPatientEvents({
+    phone: phoneForLookup,   // mesmo que a função ignore, vamos refinar localmente
+    name:  nameForLookup,
+    daysBack: 180,
+    daysAhead: 365
+  });
+
+  // 4.2) Filtra PRIMEIRO pela identidade (telefone/nome)
+  const idFilter = { phone: phoneForLookup, name: nameForLookup };
+  let filtered = rawEvents.filter(ev => eventMatchesIdentity(ev, idFilter));
+
+  // 4.3) Se veio data/hora, aplicar como filtros ADICIONAIS
+  if (ctx.dateISO) {
+    const dayStart = new Date(ctx.dateISO);
+    const dayEnd   = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+
+    filtered = filtered.filter(ev => {
+      const dt = ev.startISO ? new Date(ev.startISO) : null;
+      if (!dt) return false;
+      if (dt < dayStart || dt >= dayEnd) return false;
+
+      if (ctx.timeHHMM) {
+        const hh = String(dt.getHours()).padStart(2, "0");
+        const mi = String(dt.getMinutes()).padStart(2, "0");
+        const hhmm = `${hh}:${mi}`;
+        // tolerância de 15 min
+        if (hhmm !== ctx.timeHHMM) {
+          const target = new Date(`${dayStart.toISOString().slice(0,10)}T${ctx.timeHHMM}:00`);
+          const diff = Math.abs(dt.getTime() - target.getTime());
+          if (diff > 15 * 60 * 1000) return false;
+        }
       }
-    } catch (e) {
-      console.error("[cancel-lookup] erro:", e?.message || e);
-      matches = [];
-    }
+      return true;
+    });
+  }
+
+  matches = filtered;
+} catch (e) {
+  console.error("[cancel-lookup] erro:", e?.message || e);
+  matches = [];
+}
+
 
     // 5) Se nada encontrado, peça o que falta (sem travar)
     if (!matches.length) {
