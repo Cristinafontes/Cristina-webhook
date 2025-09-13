@@ -1125,6 +1125,77 @@ try {
 }
 
     safeLog("INBOUND", req.body);
+    // === RELATIVOS: hoje / amanhã / depois de amanhã / ontem ===
+try {
+  if ((getConversation(from)?.mode || null) !== "cancel") {
+    const raw = String(userText || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+
+    const saysHoje   = /\bhoje\b/.test(raw);
+    const saysAmanha = /\bamanha\b/.test(raw);
+    const saysDpsA   = /\bdepois\s+de\s+amanha\b/.test(raw);
+    const saysOntem  = /\bontem\b/.test(raw);
+
+    if (saysHoje || saysAmanha || saysDpsA || saysOntem) {
+      const tz = process.env.TZ || "America/Sao_Paulo";
+      const now = new Date();
+      const startOf = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
+      const today0 = startOf(now);
+
+      let targetDate = startOf(now);
+      if (saysAmanha)   targetDate = new Date(today0.getTime() + 1 * 86400000);
+      if (saysDpsA)     targetDate = new Date(today0.getTime() + 2 * 86400000);
+      if (saysOntem)    targetDate = new Date(today0.getTime() - 1 * 86400000);
+
+      // 1) "ontem" => não permite passado
+      if (saysOntem || targetDate.getTime() < today0.getTime()) {
+        await sendWhatsAppText({
+          to: from,
+          text: "Datas que já passaram não podem ser agendadas. Me diga uma **data a partir de hoje** (ex.: 24/09), ou peça por um dia da semana (ex.: \"próxima quinta\")."
+        });
+        return;
+      }
+
+      // 2) Sábado/domingo → sem expediente
+      const dow = targetDate.getDay(); // 0=dom, 6=sáb
+      if (dow === 6 || dow === 0) {
+        const lbl = dow === 6 ? "sábado" : "domingo";
+        await sendWhatsAppText({
+          to: from,
+          text: `No **${lbl}** não temos expediente. Posso te enviar **opções na segunda-feira** ou em outro dia que você preferir.`
+        });
+        return;
+      }
+
+      // 3) Hoje/agora → se "hoje", listar a partir de agora; senão, o dia todo
+      const fromISO = saysHoje ? now.toISOString() : targetDate.toISOString();
+      const slots = await listAvailableSlots({ fromISO, days: saysHoje ? 1 : 1, limit: 10 });
+
+      const fmt = new Intl.DateTimeFormat("pt-BR", { timeZone: tz, day: "2-digit", month: "2-digit" })
+        .formatToParts(targetDate).reduce((a,p)=> (a[p.type]=p.value, a), {});
+      const ddmm = `${fmt.day}/${fmt.month}`;
+
+      if (!slots.length) {
+        await sendWhatsAppText({
+          to: from,
+          text: `Para **${ddmm}** não encontrei horários livres. Posso te enviar alternativas próximas dessa data ou procurar outro dia.`
+        });
+      } else {
+        const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`).join("\n");
+        await sendWhatsAppText({
+          to: from,
+          text: `Opções para **${ddmm}**:\n${linhas}\n\nResponda com **opção N** (ex.: "opção 3") ou digite **data e horário** (ex.: "24/09 14:00").`
+        });
+        const convMem = ensureConversation(from);
+        convMem.lastSlots = slots;
+        convMem.updatedAt = Date.now();
+      }
+      return;
+    }
+  }
+} catch (e) {
+  console.error("[relative-days] erro:", e?.message || e);
+}
+
 // === ENTENDE "tem dia 19?" (sem mês) e "próxima terça?" (dia da semana) ===
 try {
   if ((getConversation(from)?.mode || null) !== "cancel") {
@@ -1182,6 +1253,30 @@ try {
     }
 
     if (targetDate) {
+      // GUARDAS: passado e fim de semana sem expediente
+const now = new Date();
+const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0,0,0,0);
+if (targetDate.getTime() < today0.getTime()) {
+  const tz = process.env.TZ || "America/Sao_Paulo";
+  const fmt = new Intl.DateTimeFormat("pt-BR",{timeZone:tz,day:"2-digit",month:"2-digit"})
+    .formatToParts(targetDate).reduce((a,p)=> (a[p.type]=p.value, a), {});
+  const ddmm = `${fmt.day}/${fmt.month}`;
+  await sendWhatsAppText({
+    to: from,
+    text: `**${ddmm}** já passou. Me diga uma data **a partir de hoje** (ex.: 24/09) ou peça por um dia da semana (ex.: "próxima quinta").`
+  });
+  return;
+}
+const dow = targetDate.getDay(); // 0=dom, 6=sáb
+if (dow === 6 || dow === 0) {
+  const lbl = dow === 6 ? "sábado" : "domingo";
+  await sendWhatsAppText({
+    to: from,
+    text: `No **${lbl}** não temos expediente. Posso procurar horários na **segunda-feira** ou outro dia que prefira.`
+  });
+  return;
+}
+
       // Listar opções deste dia
       const slots = await listAvailableSlots({
         fromISO: toISOStart(targetDate),
@@ -1202,8 +1297,8 @@ try {
 
       if (!slots.length) {
         const msg =
-          `Olá${name ? `, ${name}` : ""}! Para **${ddmm}** não encontrei horários livres.\n` +
-          `Posso te enviar alternativas próximas dessa data ou procurar outra data que você prefira.`;
+  `Para **${ddmm}** não encontrei horários livres.\n` +
+  `Posso te enviar alternativas próximas dessa data ou procurar outra data que você prefira.`;
         appendMessage(from, "assistant", msg);
         await sendWhatsAppText({ to: from, text: msg });
       } else {
@@ -1252,6 +1347,16 @@ if ((getConversation(from)?.mode || null) !== "cancel") {
       } else {
         // Só a DATA -> listar horários desse dia
         const dayStart = new Date(`${yyyy}-${mm}-${dd}T00:00:00`);
+        // GUARD: data passada não pode
+const today0 = new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate(), 0,0,0,0);
+if (dayStart.getTime() < today0.getTime()) {
+  await sendWhatsAppText({
+    to: from,
+    text: "Essa data já passou. Por favor, informe **uma data a partir de hoje** (ex.: 24/09)."
+  });
+  return;
+}
+
         const slots = await listAvailableSlots({
           fromISO: dayStart.toISOString(),
           days: 1,
@@ -1265,9 +1370,9 @@ if ((getConversation(from)?.mode || null) !== "cancel") {
         const { name } = extractPatientInfo({ payload: p, phone: from, conversation: getConversation(from) });
 
         if (!slots.length) {
-          const msg =
-            `Olá${name ? `, ${name}` : ""}! Para **${dd}/${mm}** não encontrei horários livres.\n` +
-            `Posso te enviar alternativas próximas dessa data ou procurar outra data que você prefira.`;
+         const msg =
+  `Para **${dd}/${mm}** não encontrei horários livres.\n` +
+  `Posso te enviar alternativas próximas dessa data ou procurar outra data que você prefira.`;
           appendMessage(from, "assistant", msg);
           await sendWhatsAppText({ to: from, text: msg });
         } else {
