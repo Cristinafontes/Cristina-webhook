@@ -299,8 +299,16 @@ const isLikelyNameLocal = (s) => {
   if (parts.length < 2 || parts.length > 6) return false;
 
   // blacklist reforçada
-  const BAN =
-    /\b(avalia[cç][aã]o|pr[eé][-\s]?anest|anestesia|medicina|dor|consulta|retorno|hor[áa]rio|modalidade|telefone|idade|end(?:ere[cç]o)?|paciente|motivo|preop|pré|pre)\b/i;
+  // blacklist reforçada (bloqueia termos operacionais e rótulos)
+const BAN =
+  /\b(avalia[cç][aã]o|
+     pr[eé][-\s]?anest|anestesia|
+     medicina|dor|consulta|retorno|
+     hor[áa]rio|modalidade|telefone|idade|end(?:ere[cç]o)?|
+     paciente|motivo|preop|pr[ée]|
+     agendar|agendamento|agenda|pode\s*agendar|
+     whatsapp|cristina|cl[ií]nica|secret[áa]ria|online|confir(mo|mar)
+   )\b/gi;
   if (BAN.test(v)) return false;
 
   // dias e meses não são nome
@@ -383,6 +391,20 @@ if (nameFromUser && isLikelyNameLocal(nameFromUser)) {
 // *** hardening final: exige 2+ palavras mesmo após escolha ***
 if (name && name.split(/\s+/).filter(Boolean).length < 2) {
   name = "Paciente (WhatsApp)";
+}
+// *** guard final contra nomes genéricos e rótulos operacionais ***
+{
+  const BAN_PHRASES =
+    /\b(pode\s*agendar|agendamento|agenda|
+        medicina\s+da\s+dor|
+        avalia[cç][aã]o\s+pr[eé][-\s]?anest(e|esia|[eé]sica)|
+        pr[ée][-\s]?anest(e|esia)|
+        consulta|paciente|whats?app|cristina|cl[ií]nica|secret[áa]ria
+      )\b/gi;
+
+  if (name && BAN_PHRASES.test(name)) {
+    name = "Paciente (WhatsApp)";
+  }
 }
 
 // (opcional) log para ver nos Deploy Logs
