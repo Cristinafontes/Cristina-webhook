@@ -245,12 +245,17 @@ function extractNameFromText(text) {
   }
 
   // 2) Heurística por linhas, com stopwords para evitar modalidade/intenção
-  const STOP = /\b(
-  quero|gostaria|poderia|pode|podia|vamos|preciso|desejo|
-  agendar|marcar|remarcar|cancelar|confirmar|confirmo|
-  presencial|telemedicina|consulta|retorno|hor[áa]rio|modalidade|
-  avalia[cç][aã]o|pré?-?anest|medicina|dor|op[cç][aã]o\s*\d+
-)\b/ix;
+  // Palavras/expressões que indicam intenção/comando e NÃO devem ser tratadas como nome
+const STOP_WORDS = [
+  "quero","gostaria","poderia","pode","podia","vamos","preciso","desejo",
+  "agendar","marcar","remarcar","cancelar","confirmar","confirmo",
+  "presencial","telemedicina","consulta","retorno","modalidade",
+  "avalia(?:c|ç)[aã]o","pr[eé]?-?anest","medicina","dor",
+  "op[cç][aã]o\\s*\\d+"
+];
+// \b(?:…)\b com flag i (case-insensitive). Usamos string para permitir escapes e não ter quebras de linha no literal.
+const STOP = new RegExp(`\\b(?:${STOP_WORDS.join("|")})\\b`, "i");
+
 
   const lines = t.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
   for (const line of lines) {
