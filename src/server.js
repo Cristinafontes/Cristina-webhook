@@ -143,6 +143,12 @@ function normalizePhoneForLookup(raw) {
   if (d.length > 11 && !d.startsWith("55")) return "55" + d; // força DDI
   return d;
 }
+// === Utils de data ===
+function isWeekend(dateOrISO) {
+  const d = new Date(dateOrISO);
+  const dow = d.getDay(); // 0=dom, 6=sáb
+  return dow === 0 || dow === 6;
+}
 /**
  * Tenta extrair Nome, Telefone e Motivo.
  * - Nome e Telefone: do próprio payload do WhatsApp (quando possível)
@@ -1073,19 +1079,20 @@ try {
       const nextFrom = new Date(base.getTime() + cursor.page * 7 * 86400000).toISOString();
 
       const more = await listAvailableSlots({ fromISO: nextFrom, days: 7, limit: 12 });
-      if (!more.length) {
+      const weekdayOnly = (more || []).filter(s => !isWeekend(s.startISO));
+      if (!weekdayOnly.length) {
         await sendWhatsAppText({
           to: from,
           text: "Sem mais horários nesta janela. Se preferir, diga uma **data específica** (ex.: 30/09) ou peça outro dia da semana (ex.: \"próxima quinta\")."
         });
       } else {
-        const linhas = more.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`).join("\n");
+        const linhas = weekdayOnly.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`).join("\n");
         await sendWhatsAppText({
           to: from,
           text: "Aqui vão **mais opções**:\n" + linhas + '\n\nResponda com **opção N** ou informe **data e horário**.'
         });
         const convUpd = ensureConversation(from);
-        convUpd.lastSlots = more;
+        convUpd.lastSlots = weekdayOnly;
         convUpd.slotCursor = { fromISO: nextFrom, page: (cursor.page || 1) + 1 };
         convUpd.updatedAt = Date.now();
       }
@@ -1117,6 +1124,9 @@ try {
       }).formatToParts(dt).reduce((acc, p) => (acc[p.type] = p.value, acc), {});
       const ddmmhhmm = `${fmt.day}/${fmt.month} ${fmt.hour}:${fmt.minute}`;
       userText = `Quero agendar nesse horário: ${ddmmhhmm}`;
+      const convFlag = ensureConversation(from);
+convFlag.justPickedOption = true; // evita autolista no mesmo turno
+
       // segue o fluxo normal (sem return)
     }
   }
@@ -1449,39 +1459,50 @@ if (dayStart.getTime() < today0.getTime()) {
     // === SE A IA MENCIONAR QUE VAI ENVIAR HORÁRIOS, ANEXA A LISTA GERADA DO CALENDÁRIO ===
 let finalAnswer = answer;
 try {
-  const shouldList = /vou te enviar os hor[aá]rios livres/i.test(answer || "");
-    const modeNow = getConversation(from)?.mode || null;
-if (shouldList && modeNow !== "cancel") {
-    const slots = await listAvailableSlots({
-      fromISO: new Date().toISOString(),
-      days: 7,
-      limit: 10
-    });
+  const convNow = ensureConversation(from);
+  const modeNow = getConversation(from)?.mode || null;
 
-    const { name } = extractPatientInfo({ payload: p, phone: from, conversation: getConversation(from) });
+  // dispare somente quando a IA PROMETER enviar horários
+  const shouldList = /vou te enviar os hor[aá]rios livres/i.test(answer || "");
+
+  // não autolistar se acabou de escolher "opção N" ou se está em modo cancelamento
+  const skipAuto = Boolean(convNow.justPickedOption) || modeNow === "cancel";
+
+  if (shouldList && !skipAuto) {
+    const baseISO = new Date().toISOString();
+    const raw = await listAvailableSlots({ fromISO: baseISO, days: 7, limit: 12 });
+
+    // filtra fim de semana aqui mesmo (sem depender de helper externo)
+    const slots = (raw || []).filter(s => {
+      const d = new Date(s.startISO);
+      const dow = d.getDay(); // 0=domingo, 6=sábado
+      return dow !== 0 && dow !== 6;
+    });
 
     if (!slots.length) {
       finalAnswer =
-        `Obrigado pelo contato${name ? `, ${name}` : ""}! ` +
-        `No momento não encontrei horários livres nos próximos dias.\n` +
-        `Se preferir, me diga uma **data específica** (ex.: "24/09") que eu verifico para você.`;
+        "No momento não encontrei horários **em dias úteis** nos próximos dias.\n" +
+        'Se preferir, me diga uma **data específica** (ex.: "24/09").';
     } else {
-      const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`);
-finalAnswer =
-  "Claro, escolha uma dentre as opções mais próximas que seguem abaixo:\n" +
-  linhas.join("\n") +
-  "\n\nVocê pode responder com **opção N** (ex.: \"opção 3\") ou digitar **data e horário** (ex.: \"24/09 14:00\").";
+      const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`).join("\n");
+      finalAnswer =
+        "Claro, escolha uma dentre as opções mais próximas que seguem abaixo:\n" +
+        linhas +
+        '\n\nVocê pode responder com **opção N** (ex.: "opção 3") ou digitar **data e horário** (ex.: "24/09 14:00").';
 
-      
-      const convMem = ensureConversation(from);
-      convMem.lastSlots = slots;
-      convMem.updatedAt = Date.now();
+      convNow.lastSlots = slots;
+      convNow.slotCursor = { fromISO: baseISO, page: 1 };
+      convNow.updatedAt = Date.now();
     }
   }
+
+  // se havia acabado de escolher "opção N", limpamos a flag depois de responder
+  if (convNow.justPickedOption) convNow.justPickedOption = false;
+
 } catch (e) {
   console.error("[slots-append] erro:", e?.message || e);
 }
-    
+
     // ======== DISPARO DE CANCELAMENTO (formato EXATO) ========
     // "Pronto! Sua consulta com a Dra. Jenifer está cancelada para o dia dd/mm/aa HH:MM"
     try {
