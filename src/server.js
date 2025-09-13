@@ -185,25 +185,46 @@ function toTitleCase(s) {
     .toLowerCase()
     .replace(/\b([a-zà-ÿ])([a-zà-ÿ'’\-]*)/g, (_, a, b) => a.toUpperCase() + b);
 }
+// Frases operacionais/comandos que NÃO podem virar nome (ex.: "pode agendar", "perfeito pode confirmar")
+function isOperationalPhrase(v) {
+  const t = String(v || "").toLowerCase().trim();
+
+  // Combinações modais + verbo de ação
+  if (/^(pode|poderia|podia|quero|gostaria|desejo|preciso|vamos)\s+(agendar|marcar|confirmar|remarcar|cancelar|ver|procurar)\b/.test(t)) return true;
+
+  // Confirmações/respostas curtas
+  if (/\b(ok|ok\.?|certo|beleza|perfeito|ótimo|otimo|tudo bem|pode sim|confirmo|pode confirmar)\b/.test(t)) return true;
+
+  // Palavras do domínio que geram falso positivo
+  if (/\b(medicina\s+da\s+dor|avalia[cç][aã]o|pré?-?anest|consulta|retorno|hor[áa]rio|modalidade|telefone|paciente)\b/.test(t)) return true;
+
+  // Menções a "opção N"
+  if (/\bop[cç][aã]o\s*\d+\b/.test(t)) return true;
+
+  return false;
+}
 
 // Verifica se a string "parece" um nome de pessoa
 function isLikelyName(s) {
   const v = String(s || "").trim();
   if (!v) return false;
 
-  // rejeita números / símbolos estranhos
+  // rejeita números / símbolos
   if ((v.match(/\d/g) || []).length >= 1) return false;
   if (!/^[A-Za-zÀ-ÿ'’. -]+$/.test(v)) return false;
 
+  // *** proíbe frases operacionais (ex.: "pode agendar") ***
+  if (isOperationalPhrase(v)) return false;
+
   const parts = v.split(/\s+/).filter(Boolean);
-  // *** agora exige no mínimo 2 palavras ***
+  // exige 2–6 palavras
   if (parts.length < 2 || parts.length > 6) return false;
 
-  // blacklist forte de termos que não podem estar em nome
-  const BAN = /\b(avalia[cç][aã]o|pr[eé][-\s]?anest|anestesia|medicina|dor|consulta|retorno|hor[áa]rio|modalidade|telefone|idade|end(?:ere[cç]o)?|paciente|motivo|preop|pré|pre)\b/i;
+  // blacklist reforçada
+  const BAN = /\b(avalia[cç][aã]o|pr[eé][-\s]?anest|anestesia|medicina|dor|consulta|retorno|hor[áa]rio|modalidade|telefone|idade|end(?:ere[cç]o)?|paciente|motivo|preop|pr[eé]|pre)\b/i;
   if (BAN.test(v)) return false;
 
-  // partículas comuns são ok (da, de, dos, e...)
+  // partículas ok
   const particle = /^(da|de|do|das|dos|e|d['’]?)$/i;
   for (const w of parts) {
     if (particle.test(w)) continue;
@@ -211,6 +232,7 @@ function isLikelyName(s) {
   }
   return true;
 }
+
 function extractNameFromText(text) {
   if (!text) return null;
   const t = String(text);
@@ -223,12 +245,17 @@ function extractNameFromText(text) {
   }
 
   // 2) Heurística por linhas, com stopwords para evitar modalidade/intenção
-  const STOP = /\b(quero|prefiro|preferiria|presencial|telemedicina|confirmo|agendar|cancelar|remarcar|consulta|hor[aá]rio|modalidade|avaliac[aã]o|pré?-?anest|medicina|dor)\b/i;
+  const STOP = /\b(
+  quero|gostaria|poderia|pode|podia|vamos|preciso|desejo|
+  agendar|marcar|remarcar|cancelar|confirmar|confirmo|
+  presencial|telemedicina|consulta|retorno|hor[áa]rio|modalidade|
+  avalia[cç][aã]o|pré?-?anest|medicina|dor|op[cç][aã]o\s*\d+
+)\b/ix;
 
   const lines = t.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
   for (const line of lines) {
     if (/\d/.test(line)) continue; // ignora linhas com números (telefones/datas)
-    if (STOP.test(line)) continue; // ignora frases operacionais
+    if (STOP.test(line) || isOperationalPhrase(line)) continue;
     if (/^(idade|telefone|motivo|dia)\b/i.test(line)) continue; // ignora rótulos de outros campos
     if (isLikelyName(line)) return toTitleCase(line);
   }
@@ -289,27 +316,28 @@ const isLikelyNameLocal = (s) => {
   if (!s) return false;
   const v = String(s).trim();
 
-  // rejeita números e caracteres inválidos
+  // rejeita números / símbolos
   if ((v.match(/\d/g) || []).length >= 1) return false;
   if (v.length < 3 || v.length > 80) return false;
   if (!/^[A-Za-zÀ-ÿ'’. -]+$/.test(v)) return false;
 
+  // *** proíbe frases operacionais ***
+  if (isOperationalPhrase(v)) return false;
+
   const parts = v.split(/\s+/).filter(Boolean);
-  // *** agora exige no mínimo 2 palavras ***
   if (parts.length < 2 || parts.length > 6) return false;
 
-  // blacklist reforçada
-  const BAN =
-    /\b(avalia[cç][aã]o|pr[eé][-\s]?anest|anestesia|medicina|dor|consulta|retorno|hor[áa]rio|modalidade|telefone|idade|end(?:ere[cç]o)?|paciente|motivo|preop|pré|pre)\b/i;
+  // blacklist + dias/meses
+  const BAN = /\b(avalia[cç][aã]o|pr[eé][-\s]?anest|anestesia|medicina|dor|consulta|retorno|hor[áa]rio|modalidade|telefone|idade|end(?:ere[cç]o)?|paciente|motivo|preop|pr[eé]|pre)\b/i;
   if (BAN.test(v)) return false;
 
-  // dias e meses não são nome
   const WEEKDAYS = /\b(domingo|segunda|ter[cç]a|quarta|quinta|sexta|s[áa]bado)s?\b/i;
   const MONTHS   = /\b(janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\b/i;
   if (WEEKDAYS.test(v) || MONTHS.test(v)) return false;
 
   return true;
 };
+
 
 const extractNameLocal = (text) => {
   if (!text) return null;
@@ -329,8 +357,8 @@ const extractNameLocal = (text) => {
   // 3) Linha isolada com possível nome
   const lines = t.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
   for (const line of lines) {
-    if (/^[A-Za-zÀ-ÿ'’. -]+$/.test(line) && isLikelyNameLocal(line)) {
-      return toTitleCaseLocal(line);
+    if (/^[A-Za-zÀ-ÿ'’. -]+$/.test(line) && !isOperationalPhrase(line) && isLikelyNameLocal(line)) {
+  return toTitleCaseLocal(line);
     }
   }
 
@@ -382,6 +410,10 @@ if (nameFromUser && isLikelyNameLocal(nameFromUser)) {
 }
 // *** hardening final: exige 2+ palavras mesmo após escolha ***
 if (name && name.split(/\s+/).filter(Boolean).length < 2) {
+  name = "Paciente (WhatsApp)";
+}
+// *** hardening extra: bloqueia frases operacionais mesmo com 2+ palavras ***
+if (name && isOperationalPhrase(name)) {
   name = "Paciente (WhatsApp)";
 }
 
@@ -1608,6 +1640,11 @@ if (busy) {
   }
   await sendWhatsAppText({ to: from, text: msg });
   return; // não cria evento, sai daqui
+}
+// Sanitize final do nome antes de criar o evento
+let safeName = name;
+if (!isLikelyNameLocal(safeName) || isOperationalPhrase(safeName)) {
+  safeName = "Paciente (WhatsApp)";
 }
 
 await createCalendarEvent({
