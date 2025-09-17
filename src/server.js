@@ -1480,17 +1480,18 @@ try {
   const convNow = ensureConversation(from);
   const modeNow = getConversation(from)?.mode || null;
 
-  // dispare somente quando a IA PROMETER enviar horários
-  const shouldList = /vou te enviar os hor[aá]rios livres/i.test(answer || "");
+    // 1) Detecta se a IA prometeu/ou listou horários (várias frases usuais)
+  const aiLists = /vou (?:te )?enviar os hor[aá]rios|seg(?:ue|uem)\s+as?\s+op[cç][õo]es|posso oferecer hor[aá]rios|op[cç][õo]es\s*:/i
+    .test(answer || "");
 
   // não autolistar se acabou de escolher "opção N" ou se está em modo cancelamento
   const skipAuto = Boolean(convNow.justPickedOption) || modeNow === "cancel";
 
-  if (shouldList && !skipAuto) {
+  // 1.a) Se a IA só prometeu listar, anexamos uma lista padrão de dias úteis
+  if (aiLists && !skipAuto) {
     const baseISO = new Date().toISOString();
     const raw = await listAvailableSlots({ fromISO: baseISO, days: 7, limit: 12 });
 
-    // filtra fim de semana aqui mesmo (sem depender de helper externo)
     const slots = (raw || []).filter(s => {
       const d = new Date(s.startISO);
       const dow = d.getDay(); // 0=domingo, 6=sábado
@@ -1514,7 +1515,53 @@ try {
     }
   }
 
-  // se havia acabado de escolher "opção N", limpamos a flag depois de responder
+  // 2) **Colhe** listas que a PRÓPRIA IA já mandou (ex.: "para o dia 22/09: 1) 13:00  2) 14:00")
+  try {
+    const txt = String(answer || "");
+
+    // pega "para o dia 22/09" / "do dia 22/09" etc.
+    const mDay = txt.match(/(?:para|do)\s+dia\s+(\d{1,2})\/(\d{1,2})/i);
+
+    // pega linhas numeradas com hora: "1) 13:00", "2) 14h", "3) 09:30"
+    const times = [];
+    const re = /(?:^|\n)\s*\d{1,2}\)\s*(\d{1,2})(?::|h)(\d{2})\b/gi;
+    let mm;
+    while ((mm = re.exec(txt)) !== null) {
+      const hh = String(mm[1]).padStart(2, "0");
+      const mi = String(mm[2]).padStart(2, "0");
+      times.push(`${hh}:${mi}`);
+    }
+
+    if (mDay && times.length) {
+      const dd = String(mDay[1]).padStart(2, "0");
+      const mo = String(mDay[2]).padStart(2, "0");
+      const tz = process.env.TZ || "America/Sao_Paulo";
+
+      const harvested = [];
+      for (const hhmm of times) {
+        const { found, startISO } = parseCandidateDateTime(`${dd}/${mo} ${hhmm}`, tz);
+        if (!found) continue;
+
+        const dt = new Date(startISO);
+        const parts = new Intl.DateTimeFormat("pt-BR", {
+          timeZone: tz, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"
+        }).formatToParts(dt).reduce((a,p)=> (a[p.type]=p.value, a), {});
+
+        harvested.push({
+          startISO,
+          label: `${parts.hour}:${parts.minute}`,   // ex.: 13:00
+          dayLabel: `${parts.day}/${parts.month}`,  // ex.: 22/09 (suficiente p/ exibir)
+        });
+      }
+
+      if (harvested.length) {
+        convNow.lastSlots = harvested;       // **agora o "2" vai apontar pro horário certo**
+        convNow.updatedAt = Date.now();
+      }
+    }
+  } catch { /* silencioso */ }
+
+  // limpa flags no fim do turno
   if (convNow.justPickedOption) convNow.justPickedOption = false;
   if (convNow.chosenLabel) delete convNow.chosenLabel;
 
