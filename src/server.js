@@ -1123,9 +1123,11 @@ try {
         timeZone: tz, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"
       }).formatToParts(dt).reduce((acc, p) => (acc[p.type] = p.value, acc), {});
       const ddmmhhmm = `${fmt.day}/${fmt.month} ${fmt.hour}:${fmt.minute}`;
-      userText = `Quero agendar nesse horário: ${ddmmhhmm}`;
-      const convFlag = ensureConversation(from);
+userText = `Quero agendar nesse horário: ${ddmmhhmm}`;
+const convFlag = ensureConversation(from);
 convFlag.justPickedOption = true; // evita autolista no mesmo turno
+convFlag.chosenLabel = ddmmhhmm;  // <-- NOVA LINHA: guarda “dd/mm hh:mm” escolhido
+
 
       // segue o fluxo normal (sem return)
     }
@@ -1335,7 +1337,8 @@ if ((getConversation(from)?.mode || null) !== "cancel") {
     const mDate = raw.match(/(?:\bdia\s*)?(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?/i);
 
     // horas opcionais (ex.: 14h, 14:00, 9:30)
-    const mTime = raw.match(/\b(\d{1,2})(?:[:h](\d{2}))\b/i);
+    const mTime = raw.match(/\b(\d{1,2})(?:[:h](\d{2}))?\b/i);
+
 
     if (mDate) {
       const tz = process.env.TZ || "America/Sao_Paulo";
@@ -1349,12 +1352,15 @@ if ((getConversation(from)?.mode || null) !== "cancel") {
         yyyy = new Date().getFullYear();
       }
 
-      // Se o paciente já deu hora junto (ex.: "24/09 14:00"), vira intenção direta
-      if (mTime) {
-        const hh = String(mTime[1]).padStart(2, "0");
-        const mi = String(mTime[2] || "00").padStart(2, "0");
-        userText = `Quero agendar nesse horário: ${dd}/${mm} ${hh}:${mi}`;
-      } else {
+      // Se o paciente já deu hora junto (ex.: "24/09 14:00" ou "24/09 14h"), vira intenção direta
+if (mTime) {
+  const hh = String(mTime[1]).padStart(2, "0");
+  const mi = String(mTime[2] || "00").padStart(2, "0");
+  userText = `Quero agendar nesse horário: ${dd}/${mm} ${hh}:${mi}`;
+  const convFlag = ensureConversation(from);
+  convFlag.justPickedOption = true;                 // evita autolista nesse turno
+  convFlag.chosenLabel = `${dd}/${mm} ${hh}:${mi}`; // guarda “dd/mm hh:mm” para orientar a IA
+} else {
         // Só a DATA -> listar horários desse dia
         const dayStart = new Date(`${yyyy}-${mm}-${dd}T00:00:00`);
         // GUARD: data passada não pode
@@ -1452,6 +1458,18 @@ if (dayStart.getTime() < today0.getTime()) {
     } else {
       composed = userText;
     }
+// Se o paciente JÁ escolheu um horário, orientar a secretária a seguir na captação
+const mem = getConversation(from);
+if (mem?.chosenLabel) {
+  const [ddmm, hhmm] = String(mem.chosenLabel).split(" ");
+  composed += `
+
+INSTRUÇÃO INTERNA:
+O paciente JÁ ESCOLHEU o horário ${ddmm} às ${hhmm}.
+Não liste novas opções.
+Prossiga validando/coletando: NOME COMPLETO, TELEFONE e MODALIDADE (Presencial ou Telemedicina).
+Depois, faça a pergunta de confirmação: "Posso agendar sua consulta dia ${ddmm} às ${hhmm}?"`;
+}
 
     // Resposta da secretária (IA)
     const answer = await askCristina({ userText: composed, userPhone: String(from) });
@@ -1498,6 +1516,7 @@ try {
 
   // se havia acabado de escolher "opção N", limpamos a flag depois de responder
   if (convNow.justPickedOption) convNow.justPickedOption = false;
+  if (convNow.chosenLabel) delete convNow.chosenLabel;
 
 } catch (e) {
   console.error("[slots-append] erro:", e?.message || e);
