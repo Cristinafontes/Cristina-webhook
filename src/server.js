@@ -31,7 +31,7 @@ async function sendText({ to, text }) {
   }
 
   // Padrão: mantém seu fluxo atual no Gupshup
-  return sendText({ to, text });
+  return sendWhatsAppText({ to, text });
 }
 // ===== FIM do helper =======================================================
 
@@ -1189,6 +1189,9 @@ try {
       userText = `Quero agendar nesse horário: ${ddmmhhmm}`;
       const convFlag = ensureConversation(from);
 convFlag.justPickedOption = true; // evita autolista no mesmo turno
+// evita relistar/repensar a mesma página de opções no próximo turno
+const convMem = ensureConversation(from);
+convMem.lastSlots = [];
 
       // segue o fluxo normal (sem return)
     }
