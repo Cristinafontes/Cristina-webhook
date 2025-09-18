@@ -31,7 +31,7 @@ async function sendText({ to, text }) {
   }
 
   // Padrão: mantém seu fluxo atual no Gupshup
-  return sendWhatsAppText({ to, text });
+  return sendText({ to, text });
 }
 // ===== FIM do helper =======================================================
 
@@ -110,29 +110,40 @@ app.post("/webhook/zapi", async (req, res) => {
   try {
     const b = req.body || {};
 
-    // Extrai texto de entrada (Z-API envia nesses campos)
+    // (Opcional) Se você deixou ligado "Notificar as enviadas por mim também",
+    // ignore eventos de mensagens enviadas pela própria instância para evitar loop:
+    if (b?.owner === true || b?.status === "SENT") return;
+
+    // Texto do usuário
     const inboundText =
       b?.text?.message ||
       b?.message?.text?.message ||
       b?.message?.body ||
       "";
 
-    // Extrai número de quem enviou
+    // Número do usuário
     const fromRaw = (b?.phone || b?.message?.from || "") + "";
     const from = fromRaw.replace(/\D/g, "");
 
     if (!inboundText || !from) return;
 
-    // Resposta da Cristina com seu fluxo atual de IA
-    const reply = await askCristina({ userText: inboundText, userPhone: from });
+    // MONTA um "evento no formato Gupshup" e reutiliza TODO o fluxo
+    req.body = {
+      type: "message",
+      payload: {
+        type: "text",
+        payload: { text: inboundText },
+        sender: { phone: from },
+        source: from
+      }
+    };
 
-    // Envia usando o helper unificado (2(b))
-    await sendText({ to: from, text: reply });
+    // chama o mesmo handler usado pela Gupshup
+    await handleInbound(req, res);
   } catch (e) {
     console.error("[/webhook/zapi] erro:", e?.response?.data || e);
   }
 });
-
 // =====================
 // Memória por telefone
 // =====================
@@ -683,7 +694,7 @@ async function handleInbound(req, res) {
     } else if (msgType === "button_reply" || msgType === "list_reply") {
       userText = p?.payload?.title || p?.payload?.postbackText || "";
     } else {
-      await sendWhatsAppText({
+      await sendText({
         to: from,
         text: "Por ora, consigo ler apenas mensagens de texto. Pode tentar novamente?",
       });
@@ -712,7 +723,7 @@ async function handleInbound(req, res) {
     convMem.cancelCtx = { phone: "", name: "", dateISO: null, timeHHMM: null, chosenEvent: null };
     convMem.updatedAt = Date.now();
 
-    await sendWhatsAppText({
+    await sendText({
   to: from,
   text:
     "Vamos **remarcar**. Primeiro, preciso encontrar seu agendamento atual.\n" +
@@ -729,7 +740,7 @@ return;
     convMem.updatedAt = Date.now();
 
     
-await sendWhatsAppText({
+await sendText({
   to: from,
   text:
     "Certo, vamos **cancelar**. Para eu localizar seu agendamento, me envie **Telefone** (DDD + número) **e/ou** **Nome completo**.\n" +
@@ -852,7 +863,7 @@ if (ctx.awaitingConfirm) {
     convMem.mode = null;
     convMem.after = null;
 
-    await sendWhatsAppText({
+    await sendText({
       to: from,
       text:
         "Sem problema! Posso **manter** seu agendamento, **tirar dúvidas** sobre a consulta, ou, se preferir, posso **remarcar** para outro dia/horário. Como posso te ajudar agora?"
@@ -860,7 +871,7 @@ if (ctx.awaitingConfirm) {
     return;
   } else {
     // não entendi; reapresenta o pedido, sem travar
-    await sendWhatsAppText({
+    await sendText({
       to: from,
       text: "Só para confirmar: deseja mesmo **cancelar** esse horário? Responda **sim** ou **não**."
     });
@@ -876,7 +887,7 @@ if (pickM && Array.isArray(convMem.cancelCtx?.matchList) && convMem.cancelCtx.ma
   if (chosen) {
     ctx.chosenEvent = chosen;
   } else {
-    await sendWhatsAppText({ to: from, text: "Número inválido. Responda com 1, 2, 3 conforme a lista." });
+    await sendText({ to: from, text: "Número inválido. Responda com 1, 2, 3 conforme a lista." });
     return;
   }
 }
@@ -929,7 +940,7 @@ if (candidateName) {
     // 3) GATE: só seguimos se tiver TELEFONE ou NOME; data/hora sozinha não basta
 if (!ctx.phone && !ctx.name) {
   // o paciente mandou apenas data/hora ou nada útil → peça identidade
-  await sendWhatsAppText({
+  await sendText({
     to: from,
     text:
       "Para localizar com segurança, me envie **Telefone** (DDD + número) **e/ou** **Nome completo**.\n" +
@@ -940,7 +951,7 @@ if (!ctx.phone && !ctx.name) {
 
     // 4) Buscar eventos: identidade (Telefone e/ou Nome) é obrigatória; Data/Hora são filtros adicionais
 if (!ctx.phone && !ctx.name) {
-  await sendWhatsAppText({
+  await sendText({
     to: from,
     text:
       "Preciso de **Telefone** (DDD + número) **e/ou** **Nome completo** para localizar seu agendamento.\n" +
@@ -1007,7 +1018,7 @@ try {
         faltantes.length
           ? `Tente me enviar ${faltantes.join(" e ")} (pode ser só um deles)`
           : "Se puder, me confirme a **data** (ex.: 26/09) e o **horário** (ex.: 09:00) do agendamento";
-      await sendWhatsAppText({
+      await sendText({
         to: from,
         text:
           "Não encontrei seu agendamento com as informações atuais.\n" +
@@ -1019,7 +1030,7 @@ try {
     // 6) Se múltiplos, lista para escolha
     if (matches.length > 1 && !ctx.chosenEvent) {
       const linhas = matches.map((ev, i) => `${i + 1}) ${ev.dayLabel} ${ev.timeLabel} — ${ev.summary || "Consulta"}`);
-      await sendWhatsAppText({
+      await sendText({
         to: from,
         text:
           "Encontrei mais de um agendamento. Escolha **1**, **2**, **3**...\n" +
@@ -1045,7 +1056,7 @@ if (ctx.chosenEvent && !ctx.awaitingConfirm && !ctx.confirmed) {
   const dd = ctx.chosenEvent.dayLabel;
   const hhmm = ctx.chosenEvent.timeLabel;
 
-  await sendWhatsAppText({
+  await sendText({
     to: from,
     text:
       `Pronto${who}, encontrei sua consulta em **${dd}**, às **${hhmm}**.\n` +
@@ -1068,7 +1079,7 @@ try {
 } catch (e) {
 
   console.error("[cancel-google] erro:", e?.message || e);
-  await sendWhatsAppText({
+  await sendText({
     to: from,
     text: "Tive um erro ao cancelar no calendário. Pode me enviar novamente as informações ou digitar 'reset' para recomeçar?"
   });
@@ -1081,7 +1092,7 @@ try {
     const yy = new Date(ctx.chosenEvent.startISO).getFullYear().toString().slice(-2);
     const cancelText = `Pronto! Sua consulta com a Dra. Jenifer está cancelada para o dia ${dd}/${yy} ${hhmm}.`;
 
-    await sendWhatsAppText({ to: from, text: cancelText });
+    await sendText({ to: from, text: cancelText });
 
     // 9) Se era remarcar, oferecer horários (com "opção N")
     const shouldReschedule = convMem.after === "schedule";
@@ -1109,7 +1120,7 @@ try {
         convMem.slotCursor = { fromISO: new Date().toISOString(), page: 1 };
         convMem.updatedAt = Date.now();
       }
-      await sendWhatsAppText({ to: from, text: msg });
+      await sendText({ to: from, text: msg });
     }
 
     return; // não deixa cair em outras regras
@@ -1133,13 +1144,13 @@ try {
       const more = await listAvailableSlots({ fromISO: nextFrom, days: 7, limit: 12 });
       const weekdayOnly = (more || []).filter(s => !isWeekend(s.startISO));
       if (!weekdayOnly.length) {
-        await sendWhatsAppText({
+        await sendText({
           to: from,
           text: "Sem mais horários nesta janela. Se preferir, diga uma **data específica** (ex.: 30/09) ou peça outro dia da semana (ex.: \"próxima quinta\")."
         });
       } else {
         const linhas = weekdayOnly.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`).join("\n");
-        await sendWhatsAppText({
+        await sendText({
           to: from,
           text: "Aqui vão **mais opções**:\n" + linhas + '\n\nResponda com **opção N** ou informe **data e horário**.'
         });
@@ -1161,7 +1172,7 @@ try {
       const chosen = convMem.lastSlots[idx];
 
       if (!chosen) {
-        await sendWhatsAppText({
+        await sendText({
           to: from,
           text: "Número inválido. Responda com **opção N** conforme a lista atual, ou peça **mais** para ver outras opções."
         });
@@ -1210,7 +1221,7 @@ try {
 
       // 1) "ontem" => não permite passado
       if (saysOntem || targetDate.getTime() < today0.getTime()) {
-        await sendWhatsAppText({
+        await sendText({
           to: from,
           text: "Datas que já passaram não podem ser agendadas. Me diga uma **data a partir de hoje** (ex.: 24/09), ou peça por um dia da semana (ex.: \"próxima quinta\")."
         });
@@ -1221,7 +1232,7 @@ try {
       const dow = targetDate.getDay(); // 0=dom, 6=sáb
       if (dow === 6 || dow === 0) {
         const lbl = dow === 6 ? "sábado" : "domingo";
-        await sendWhatsAppText({
+        await sendText({
           to: from,
           text: `No **${lbl}** não temos expediente. Posso te enviar **opções na segunda-feira** ou em outro dia que você preferir.`
         });
@@ -1237,13 +1248,13 @@ try {
       const ddmm = `${fmt.day}/${fmt.month}`;
 
       if (!slots.length) {
-        await sendWhatsAppText({
+        await sendText({
           to: from,
           text: `Para **${ddmm}** não encontrei horários livres. Posso te enviar alternativas próximas dessa data ou procurar outro dia.`
         });
       } else {
         const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`).join("\n");
-        await sendWhatsAppText({
+        await sendText({
           to: from,
           text: `Opções para **${ddmm}**:\n${linhas}\n\nResponda com **opção N** (ex.: "opção 3") ou digite **data e horário** (ex.: "24/09 14:00").`
         });
@@ -1323,7 +1334,7 @@ if (targetDate.getTime() < today0.getTime()) {
   const fmt = new Intl.DateTimeFormat("pt-BR",{timeZone:tz,day:"2-digit",month:"2-digit"})
     .formatToParts(targetDate).reduce((a,p)=> (a[p.type]=p.value, a), {});
   const ddmm = `${fmt.day}/${fmt.month}`;
-  await sendWhatsAppText({
+  await sendText({
     to: from,
     text: `**${ddmm}** já passou. Me diga uma data **a partir de hoje** (ex.: 24/09) ou peça por um dia da semana (ex.: "próxima quinta").`
   });
@@ -1332,7 +1343,7 @@ if (targetDate.getTime() < today0.getTime()) {
 const dow = targetDate.getDay(); // 0=dom, 6=sáb
 if (dow === 6 || dow === 0) {
   const lbl = dow === 6 ? "sábado" : "domingo";
-  await sendWhatsAppText({
+  await sendText({
     to: from,
     text: `No **${lbl}** não temos expediente. Posso procurar horários na **segunda-feira** ou outro dia que prefira.`
   });
@@ -1362,7 +1373,7 @@ if (dow === 6 || dow === 0) {
   `Para **${ddmm}** não encontrei horários livres.\n` +
   `Posso te enviar alternativas próximas dessa data ou procurar outra data que você prefira.`;
         appendMessage(from, "assistant", msg);
-        await sendWhatsAppText({ to: from, text: msg });
+        await sendText({ to: from, text: msg });
       } else {
         const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`);
         const msg =
@@ -1370,7 +1381,7 @@ if (dow === 6 || dow === 0) {
           linhas.join("\n") +
           `\n\nResponda com **opção N** (ex.: "opção 3") ou digite **data e horário** (ex.: "24/09 14:00").`;
         appendMessage(from, "assistant", msg);
-        await sendWhatsAppText({ to: from, text: msg });
+        await sendText({ to: from, text: msg });
       }
       return; // não deixa cair em outros blocos; evita travar o fluxo
     }
@@ -1412,7 +1423,7 @@ if ((getConversation(from)?.mode || null) !== "cancel") {
         // GUARD: data passada não pode
 const today0 = new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate(), 0,0,0,0);
 if (dayStart.getTime() < today0.getTime()) {
-  await sendWhatsAppText({
+  await sendText({
     to: from,
     text: "Essa data já passou. Por favor, informe **uma data a partir de hoje** (ex.: 24/09)."
   });
@@ -1436,7 +1447,7 @@ if (dayStart.getTime() < today0.getTime()) {
   `Para **${dd}/${mm}** não encontrei horários livres.\n` +
   `Posso te enviar alternativas próximas dessa data ou procurar outra data que você prefira.`;
           appendMessage(from, "assistant", msg);
-          await sendWhatsAppText({ to: from, text: msg });
+          await sendText({ to: from, text: msg });
         } else {
           const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`);
           const msg =
@@ -1444,7 +1455,7 @@ if (dayStart.getTime() < today0.getTime()) {
             linhas.join("\n") +
             `\n\nResponda com **opção N** (ex.: "opção 3") ou digite **data e horário** (ex.: "24/09 14:00").`;
           appendMessage(from, "assistant", msg);
-          await sendWhatsAppText({ to: from, text: msg });
+          await sendText({ to: from, text: msg });
         }
         return; // já respondemos com as opções do dia solicitado
       }
@@ -1464,7 +1475,7 @@ if (dayStart.getTime() < today0.getTime()) {
 
   if (hintsDate && !hasExplicit && !looksOption && (getConversation(from)?.mode || null) !== "cancel") {
     // Acolhe, pede no formato que destrava e segue o fluxo
-    await sendWhatsAppText({
+    await sendText({
       to: from,
       text:
         "Claro! Posso te ajudar com a agenda. Me diga uma **data** (ex.: 24/09) ou responda com **opção N** da lista. " +
@@ -1658,7 +1669,7 @@ if (busy) {
   } else {
     msg += "\n\nNos próximos dias não há janelas livres. Posso procurar mais adiante.";
   }
-  await sendWhatsAppText({ to: from, text: msg });
+  await sendText({ to: from, text: msg });
   return; // não cria evento, sai daqui
 }
 
@@ -1706,7 +1717,7 @@ if (finalAnswer) {
     .trim();
 
   appendMessage(from, "assistant", finalAnswer);
-  await sendWhatsAppText({ to: from, text: finalAnswer });
+  await sendText({ to: from, text: finalAnswer });
 }
 
 // <-- fecha o try global do handleInbound
