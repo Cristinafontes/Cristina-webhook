@@ -9,6 +9,7 @@ import getRawBody from "raw-body";
 
 import { askCristina } from "./openai.js";
 import { sendWhatsAppText } from "./gupshup.js";
+import { sendZapiText } from "./zapi.js";
 import { safeLog } from "./redact.js";
 
 // >>> CALENDÁRIO (somente nossas funções)
