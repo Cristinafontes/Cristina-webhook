@@ -40,6 +40,9 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 8080;
 
+app.set("trust proxy", 1);
+
+
 // =====================
 // Security & middleware
 // =====================
