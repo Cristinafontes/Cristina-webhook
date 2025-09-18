@@ -19,6 +19,23 @@ import { isSlotBlockedOrBusy } from "./availability.esm.js";
 import { listAvailableSlots } from "./slots.esm.js";
 // <<< FIM CALENDÁRIO
 
+// ===== Helper de envio unificado (Z-API ou Gupshup) =====
+async function sendText({ to, text }) {
+  // Escolhe o provedor pelo .env (padrão: Gupshup)
+  const provider = (process.env.WHATSAPP_PROVIDER || "GUPSHUP").toUpperCase();
+
+  if (provider === "ZAPI") {
+    // Z-API exige apenas dígitos (DDI+DDD+NÚMERO)
+    const phone = (to || "").toString().replace(/\D/g, "");
+    return sendZapiText({ phone, message: text });
+  }
+
+  // Padrão: mantém seu fluxo atual no Gupshup
+  return sendWhatsAppText({ to, text });
+}
+// ===== FIM do helper =======================================================
+
+
 dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -81,6 +98,36 @@ app.get("/", (_req, res) =>
 );
 app.get("/healthz", (_req, res) => res.status(200).send("ok"));
 app.get("/webhook/gupshup", (_req, res) => res.status(200).send("ok"));
+// === Webhook Z-API (mensagens recebidas) ===
+app.post("/webhook/zapi", async (req, res) => {
+  // Confirma rápido para a Z-API
+  res.sendStatus(200);
+
+  try {
+    const b = req.body || {};
+
+    // Extrai texto de entrada (Z-API envia nesses campos)
+    const inboundText =
+      b?.text?.message ||
+      b?.message?.text?.message ||
+      b?.message?.body ||
+      "";
+
+    // Extrai número de quem enviou
+    const fromRaw = (b?.phone || b?.message?.from || "") + "";
+    const from = fromRaw.replace(/\D/g, "");
+
+    if (!inboundText || !from) return;
+
+    // Resposta da Cristina com seu fluxo atual de IA
+    const reply = await askCristina({ userText: inboundText, userPhone: from });
+
+    // Envia usando o helper unificado (2(b))
+    await sendText({ to: from, text: reply });
+  } catch (e) {
+    console.error("[/webhook/zapi] erro:", e?.response?.data || e);
+  }
+});
 
 // =====================
 // Memória por telefone
