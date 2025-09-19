@@ -707,7 +707,17 @@ async function handleInbound(req, res) {
   resetConversation(from);
   return;
 }
-    
+  // === BLACKLIST DE SAUDAÇÕES (não dispara pescagem nem agendamento) ===
+const isPureGreeting =
+  /^(bom\s*dia|boa\s*tarde|boa\s*noite|ol[áa]|oi)\s*!?\.?$/i.test((userText || "").trim());
+if (isPureGreeting) {
+  await sendText({
+    to: from,
+    text: "Olá! 😊 Como posso te ajudar? Se quiser **agendar**, me diga uma **data** (ex.: 24/09) ou responda com **opção N** da lista quando eu enviar."
+  });
+  return; // <- não deixa cair na pescagem automática
+}
+  
 // === INTENÇÃO DE CANCELAMENTO / REAGENDAMENTO ===
 {
   const convMem = ensureConversation(from);
@@ -1420,6 +1430,8 @@ if ((getConversation(from)?.mode || null) !== "cancel") {
         const hh = String(mTime[1]).padStart(2, "0");
         const mi = String(mTime[2] || "00").padStart(2, "0");
         userText = `Quero agendar nesse horário: ${dd}/${mm} ${hh}:${mi}`;
+        // Evita autolistar neste turno (senão a IA promete horários e relista)
+ensureConversation(from).justPickedOption = true;
       } else {
         // Só a DATA -> listar horários desse dia
         const dayStart = new Date(`${yyyy}-${mm}-${dd}T00:00:00`);
@@ -1487,6 +1499,28 @@ if (dayStart.getTime() < today0.getTime()) {
     // Mantemos a conversa aberta (sem return) para que a IA também possa responder, se quiser.
   }
 }
+// === VALIDADOR RÁPIDO DE "DATA + HORA" (mensagem de ajuda quando formato inválido) ===
+try {
+  const tz = process.env.TZ || "America/Sao_Paulo";
+  const mDT = /(\d{1,2})[\/\-](\d{1,2})\s+(\d{1,2})(?::|h)(\d{2})/i.exec(String(userText||""));
+  if (mDT) {
+    // Monta "dd/mm hh:mm" e valida com seu parser padrão
+    const dd = mDT[1].padStart(2, "0");
+    const mm = mDT[2].padStart(2, "0");
+    const hh = mDT[3].padStart(2, "0");
+    const mi = mDT[4].padStart(2, "0");
+
+    const parsed = await parseCandidateDateTime(`${dd}/${mm} ${hh}:${mi}`, tz);
+    if (!parsed || !parsed.found) {
+      await sendText({
+        to: from,
+        text: 'Desculpe, não entendi o que falou. 😅\n' +
+              'Tente no formato **"24/09 11:00"** (dia/mês e hora:minuto).'
+      });
+      return; // <- evita cair na IA/auto-lista com entrada inválida
+    }
+  }
+} catch {}
 
     // Montagem de contexto para a IA
     const conv = getConversation(from);
