@@ -711,12 +711,12 @@ async function handleInbound(req, res) {
 const isPureGreeting =
   /^(bom\s*dia|boa\s*tarde|boa\s*noite|ol[áa]|oi)\s*!?\.?$/i.test((userText || "").trim());
 if (isPureGreeting) {
-  await sendText({
-    to: from,
-    text: "Olá! 😊 Como posso te ajudar? Se quiser **agendar**, me diga uma **data** (ex.: 24/09) ou responda com **opção N** da lista quando eu enviar."
-  });
-  return; // <- não deixa cair na pescagem automática
+  // Não responda nada aqui.
+  // Deixe seguir para a IA — e evite qualquer autolista neste turno.
+  ensureConversation(from).justPickedOption = true; // “trava” a autolista só neste turno
+  // (sem return)
 }
+
   
 // === INTENÇÃO DE CANCELAMENTO / REAGENDAMENTO ===
 {
