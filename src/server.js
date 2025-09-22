@@ -1608,9 +1608,11 @@ if (dayStart.getTime() < today0.getTime()) {
 const rawLite = rawNoGreeting
   .normalize("NFD").replace(/[\u0300-\u036f]/g, ""); // tira acentos
 const wantsNearest =
-  /\b(mais\s*proxim|proxima\s*disponibilidade|quando\s*tem\s*disponivel|primeiro\s*horario|horarios?\s*mais\s*proxim)\b/.test(rawLite);
+  /\b(mais\s*proxim[oa]|data\s*mais\s*proxim[oa]|quando\s*tem\s*disponivel|primeir[oa]\s*horario|horarios?\s*mais\s*proxim[oa])\b/.test(rawLite);
 
-  
+  // debug leve: ver no log quando for pedido de "mais proximo"
+if (wantsNearest) console.log("[guard] pedido de 'mais proximo' detectado:", rawNoGreeting);
+
   if (hintsDate && !hasExplicit && !looksOption && (getConversation(from)?.mode || null) !== "cancel" && !wantsNearest) {
 
     // Acolhe, pede no formato que destrava e segue o fluxo
