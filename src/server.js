@@ -1604,8 +1604,15 @@ if (dayStart.getTime() < today0.getTime()) {
   const hasExplicit = /(\b\d{1,2}[\/\-]\d{1,2}\b)|\b(\d{1,2}:\d{2})\b/.test(rawNoGreeting);
   const looksOption = /^\s*(op[cç][aã]o\s*)?\d+[).]?\s*$/.test(rawNoGreeting);
 
+// evita a redundância quando a pessoa pede "mais próximo"
+const rawLite = rawNoGreeting
+  .normalize("NFD").replace(/[\u0300-\u036f]/g, ""); // tira acentos
+const wantsNearest =
+  /\b(mais\s*proxim|proxima\s*disponibilidade|quando\s*tem\s*disponivel|primeiro\s*horario|horarios?\s*mais\s*proxim)\b/.test(rawLite);
 
-  if (hintsDate && !hasExplicit && !looksOption && (getConversation(from)?.mode || null) !== "cancel") {
+  
+  if (hintsDate && !hasExplicit && !looksOption && (getConversation(from)?.mode || null) !== "cancel" && !wantsNearest) {
+
     // Acolhe, pede no formato que destrava e segue o fluxo
     await sendText({
       to: from,
