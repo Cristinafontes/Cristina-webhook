@@ -1669,6 +1669,49 @@ try {
     } else {
       composed = userText;
     }
+// === INTENÇÃO: "mais próximo" / "quando tem disponível"  =====================
+{
+  const t = (userText || "")
+    .toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+
+  const wantsNearest =
+    /\b(mais\s*proxim|proxima\s*disponibilidade|quando\s*tem\s*disponivel|primeiro\s*horario|horarios?\s+mais\s*proxim)/.test(t);
+
+  if (wantsNearest && (getConversation(from)?.mode || null) !== "cancel") {
+    const baseISO = new Date().toISOString();
+
+    // pega próximos dias úteis, limitado à sua página
+    const raw = await listAvailableSlots({ fromISO: baseISO, days: 7, limit: SLOTS_PAGE_SIZE });
+    const slots = (raw || []).filter(s => {
+      const dow = new Date(s.startISO).getDay(); // 0 dom, 6 sáb
+      return dow !== 0 && dow !== 6;
+    });
+
+    if (!slots.length) {
+      await sendText({
+        to: from,
+        text: "No momento não encontrei horários em dias úteis nos próximos dias. Se preferir, me diga uma data (ex.: 24/09)."
+      });
+    } else {
+      const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`).join("\n");
+      const msg =
+        "Claro, aqui vão as opções mais próximas:\n" +
+        linhas +
+        '\n\nResponda com **opção N** (ex.: "opção 3") ou digite **data e horário** (ex.: "24/09 14:00").';
+
+      const convNow = ensureConversation(from);
+      convNow.lastSlots = slots;
+      convNow.slotCursor = { fromISO: baseISO, page: 1 };
+      convNow.updatedAt = Date.now();
+
+      appendMessage(from, "assistant", msg);
+      await sendText({ to: from, text: msg });
+    }
+    return; // corta o fluxo aqui para não vir a mensagem genérica da IA
+  }
+}
+// ============================================================================ 
 
     // Resposta da secretária (IA)
     const answer = await askCristina({ userText: composed, userPhone: String(from) });
