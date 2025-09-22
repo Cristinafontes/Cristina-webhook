@@ -1599,6 +1599,7 @@ if (dayStart.getTime() < today0.getTime()) {
     const raw = (userText || "").toLowerCase();
   // remove saudações para não confundir o detector com o "dia" de "bom dia"
   const rawNoGreeting = raw.replace(/\b(bom\s*dia|boa\s*tarde|boa\s*noite|ol[áa]|oi)\b/g, "").trim();
+  const veryShortAsk = rawNoGreeting.length <= 16 && /\b(quando\s*tem\??|tem\?)\b/.test(rawLite);
 
   const hintsDate = /\b(tem|dia|data|agenda|quando|qdo|pr[oó]xim[ao]s?|semana|segunda|ter[cç]a|quarta|quinta|sexta|s[áa]bado)\b/.test(rawNoGreeting);
   const hasExplicit = /(\b\d{1,2}[\/\-]\d{1,2}\b)|\b(\d{1,2}:\d{2})\b/.test(rawNoGreeting);
@@ -1612,7 +1613,8 @@ const wantsNearest =
   /\b(mais\s*proxim[oa]|data\s*mais\s*proxim[oa]|primeir[oa]\s*(data|horario)|mais\s*cedo(\s*possivel)?)\b/.test(rawLite);
 
 const wantsAvailability =
-  /\b(quando\s*tem\s*(livre|agenda|disponivel)|tem\s*(horario|agenda)|horarios?\s*disponiveis|quais\s*horarios|quando\s*(pode|daria))\b/.test(rawLite);
+  veryShortAsk ||
+  /\b(quando\s*tem(\s*(livre|agenda|dispon[ií]vel))?|quais\s*hor[áa]rios|hor[áa]rios?\s*dispon[ií]veis|tem\s*(agenda|hor[áa]rio))\b/.test(rawLite);
 
   // debug leve: ver no log quando for pedido de "mais proximo"
 if (wantsNearest) console.log("[guard] pedido de 'mais proximo' detectado:", rawNoGreeting);
@@ -1748,7 +1750,8 @@ try {
   // não autolistar se acabou de escolher "opção N" ou se está em modo cancelamento
   const skipAuto = Boolean(convNow.justPickedOption) || modeNow === "cancel";
 
-  if (shouldList && !skipAuto) {
+  const tooRecent = Date.now() - (convNow.listedNowAt || 0) < 4000; // 4s de janela
+if (shouldList && !skipAuto && !tooRecent) {
     const baseISO = new Date().toISOString();
     const raw = await listAvailableSlots({ fromISO: baseISO, days: 7, limit: SLOTS_PAGE_SIZE });
 
