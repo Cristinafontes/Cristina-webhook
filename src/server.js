@@ -19,6 +19,13 @@ import { isSlotBlockedOrBusy } from "./availability.esm.js";
 import { listAvailableSlots } from "./slots.esm.js";
 // <<< FIM CALENDÁRIO
 
+// === CONFIG QUE CONTROLA QUANTAS OPÇÕES MOSTRAR POR PÁGINA ===
+const SLOTS_PAGE_SIZE = parseInt(process.env.SLOTS_PAGE_SIZE || "4", 10); // 4 pedidas
+const MORE_SLOTS_DAYS = 7; // janela da paginação "mais" (pode manter 7)
+
+// (opcional) liga/desliga limpeza de *negrito* e ativa placeholder {{nome}}
+const WHATSAPP_STRIP_MARKDOWN = String(process.env.WHATSAPP_STRIP_MARKDOWN || "true").toLowerCase() === "true";
+
 // ===== Helper de envio unificado (Z-API ou Gupshup) =====
 // Versão "segura": jitter, cooldown por contato e deduplicação
 const _lastSendAtByPhone = new Map(); // phone -> timestamp
@@ -43,7 +50,16 @@ async function sendText({ to, text }) {
   // mantém compatibilidade com o resto do código
   const provider = (process.env.WHATSAPP_PROVIDER || "GUPSHUP").toUpperCase();
   const phone = (to || "").toString().replace(/\D/g, "");
-  const msg = String(text || "");
+    // 0) formata mensagem (nome + tira *...* se quiser)
+    const raw = String(text || "");
+  const convSnap = getConversation(phone);
+  const pname = (convSnap && convSnap.patientName && convSnap.patientName !== "Paciente (WhatsApp)")
+    ? convSnap.patientName : "";
+  let msg = raw.replace(/\{\{\s*nome\s*\}\}/gi, pname); // suporta placeholder {{nome}}
+  if (WHATSAPP_STRIP_MARKDOWN) {
+  // remove *negrito* e ***variações*** sem quebrar o texto
+  msg = msg.replace(/\*{1,3}([^*]+)\*{1,3}/g, "$1");
+}
 
   // 1) Deduplicação: ignora se mesma mensagem foi enviada nos últimos X segundos
   try {
@@ -221,6 +237,7 @@ app.post("/webhook/zapi", async (req, res) => {
 const MEMORY_TTL_HOURS = Number(process.env.MEMORY_TTL_HOURS || 24);
 const MEMORY_MAX_MESSAGES = Number(process.env.MEMORY_MAX_MESSAGES || 20);
 const MAX_CONTEXT_CHARS = Number(process.env.MAX_CONTEXT_CHARS || 20000);
+const SLOTS_PAGE_SIZE = Number(process.env.SLOTS_PAGE_SIZE || 4);
 
 const conversations = new Map();
 
@@ -773,7 +790,14 @@ async function handleInbound(req, res) {
     }
 
     const trimmed = (userText || "").trim().toLowerCase();
-  
+  // === MEMÓRIA DE IDENTIDADE (nome/telefone) ===
+{
+  const conv = ensureConversation(from);
+  const picked = extractPatientInfo({ payload: p, phone: from, conversation: conv });
+  if (picked?.name && picked.name !== "Paciente (WhatsApp)") conv.patientName = picked.name;
+  conv.lastKnownPhone = from;
+}
+
     if (["reset", "reiniciar", "reiniciar conversa", "novo atendimento"].includes(trimmed)) {
   resetConversation(from);
   return;
@@ -1183,8 +1207,8 @@ try {
     if (shouldReschedule) {
       const slots = await listAvailableSlots({
         fromISO: new Date().toISOString(),
-        days: 14,   // cobre mais dias
-        limit: 12   // mais opções
+        days: 14,
+        limit: SLOTS_PAGE_SIZE
       });
 
       let msg;
@@ -1193,8 +1217,8 @@ try {
               "Se preferir, me diga uma **data específica** (ex.: 24/09).";
       } else {
         const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`).join("\n");
-        msg = "Cancelamento concluído. Vamos remarcar agora. Seguem as **opções**:\n" +
-              linhas +
+        msg = msg = "Cancelamento concluído, {{nome}}. Vamos remarcar agora. Seguem as opções:\n" + 
+          linhas +
               '\n\nResponda com **opção N** (ex.: "opção 3") ou digite **data e horário** (ex.: "24/09 14:00").\n' +
               'Se quiser ver **mais opções**, responda: **mais**.';
         convMem.lastSlots = slots;
@@ -1222,8 +1246,8 @@ try {
       const base = new Date(cursor.fromISO);
       const nextFrom = new Date(base.getTime() + cursor.page * 7 * 86400000).toISOString();
 
-      const more = await listAvailableSlots({ fromISO: nextFrom, days: 7, limit: 12 });
-      const weekdayOnly = (more || []).filter(s => !isWeekend(s.startISO));
+      const more = await listAvailableSlots({ fromISO: nextFrom, days: MORE_SLOTS_DAYS, limit: SLOTS_PAGE_SIZE });
+      const weekdayOnly = (more || []).filter(s => !isWeekend(s.startISO)).slice(0, SLOTS_PAGE_SIZE);
       if (!weekdayOnly.length) {
         await sendText({
           to: from,
@@ -1282,6 +1306,26 @@ convMem.lastSlots = [];
 }
 
     safeLog("INBOUND", req.body);
+
+    // === PICK NUMÉRICO GLOBAL (antes de datas) ===
+{
+  const conv = getConversation(from);
+  const pure = (userText || "").trim().replace(/[^\d]/g, "");
+  if (pure && /^\d{1,2}$/.test(pure) && Array.isArray(conv?.lastSlots) && conv.lastSlots.length) {
+    const idx = Number(pure) - 1;
+    const chosen = conv.lastSlots[idx];
+    if (chosen) {
+      const dt = new Date(chosen.startISO);
+      const tz = process.env.TZ || "America/Sao_Paulo";
+      const fmt = new Intl.DateTimeFormat("pt-BR", { timeZone: tz, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })
+        .formatToParts(dt).reduce((acc, p) => (acc[p.type] = p.value, acc), {});
+      userText = `Quero agendar nesse horário: ${fmt.day}/${fmt.month} ${fmt.hour}:${fmt.minute}`;
+      ensureConversation(from).justPickedOption = true;
+      // não limpamos lastSlots aqui (mantém robusto se o provedor repetir evento)
+    }
+  }
+}
+
     // === RELATIVOS: hoje / amanhã / depois de amanhã / ontem ===
 try {
   if ((getConversation(from)?.mode || null) !== "cancel") {
@@ -1325,7 +1369,7 @@ try {
 
       // 3) Hoje/agora → se "hoje", listar a partir de agora; senão, o dia todo
       const fromISO = saysHoje ? now.toISOString() : targetDate.toISOString();
-      const slots = await listAvailableSlots({ fromISO, days: saysHoje ? 1 : 1, limit: 10 });
+      const slots = await listAvailableSlots({ fromISO, days: saysHoje ? 1 : 1, limit: SLOTS_PAGE_SIZE });
 
       const fmt = new Intl.DateTimeFormat("pt-BR", { timeZone: tz, day: "2-digit", month: "2-digit" })
         .formatToParts(targetDate).reduce((a,p)=> (a[p.type]=p.value, a), {});
@@ -1438,7 +1482,7 @@ if (dow === 6 || dow === 0) {
       const slots = await listAvailableSlots({
         fromISO: toISOStart(targetDate),
         days: 1,
-        limit: 10
+        limit: SLOTS_PAGE_SIZE
       });
 
       const convMem = ensureConversation(from);
@@ -1519,7 +1563,7 @@ if (dayStart.getTime() < today0.getTime()) {
         const slots = await listAvailableSlots({
           fromISO: dayStart.toISOString(),
           days: 1,
-          limit: 10
+          limit: SLOTS_PAGE_SIZE
         });
 
         const convMem = ensureConversation(from);
@@ -1643,7 +1687,8 @@ try {
 
   if (shouldList && !skipAuto) {
     const baseISO = new Date().toISOString();
-    const raw = await listAvailableSlots({ fromISO: baseISO, days: 7, limit: 12 });
+    const raw = await listAvailableSlots({ fromISO: baseISO, days: 7, limit: SLOTS_PAGE_SIZE });
+
 
     // filtra fim de semana aqui mesmo (sem depender de helper externo)
     const slots = (raw || []).filter(s => {
