@@ -1606,15 +1606,20 @@ if (dayStart.getTime() < today0.getTime()) {
 
 // evita a redundância quando a pessoa pede "mais próximo"
 const rawLite = rawNoGreeting
-  .normalize("NFD").replace(/[\u0300-\u036f]/g, ""); // tira acentos
+  .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+
 const wantsNearest =
-  /\b(mais\s*proxim[oa]|data\s*mais\s*proxim[oa]|quando\s*tem\s*disponivel|primeir[oa]\s*horario|horarios?\s*mais\s*proxim[oa])\b/.test(rawLite);
+  /\b(mais\s*proxim[oa]|data\s*mais\s*proxim[oa]|primeir[oa]\s*(data|horario)|mais\s*cedo(\s*possivel)?)\b/.test(rawLite);
+
+const wantsAvailability =
+  /\b(quando\s*tem\s*(livre|agenda|disponivel)|tem\s*(horario|agenda)|horarios?\s*disponiveis|quais\s*horarios|quando\s*(pode|daria))\b/.test(rawLite);
 
   // debug leve: ver no log quando for pedido de "mais proximo"
 if (wantsNearest) console.log("[guard] pedido de 'mais proximo' detectado:", rawNoGreeting);
-
-  if (hintsDate && !hasExplicit && !looksOption && (getConversation(from)?.mode || null) !== "cancel" && !wantsNearest) {
-
+  
+  if (hintsDate && !hasExplicit && !looksOption &&
+    (getConversation(from)?.mode || null) !== "cancel" &&
+    !wantsNearest && !wantsAvailability) {
     // Acolhe, pede no formato que destrava e segue o fluxo
     await sendText({
       to: from,
@@ -1681,13 +1686,19 @@ try {
 // === INTENÇÃO: "mais próximo" / "quando tem disponível"  =====================
 {
   const t = (userText || "")
-    .toLowerCase()
-    .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  .toLowerCase()
+  .normalize("NFD").replace(/[\u0300-\u036f]/g, ""); // sem acentos
 
-  const wantsNearest =
-    /\b(mais\s*proxim|proxima\s*disponibilidade|quando\s*tem\s*disponivel|primeiro\s*horario|horarios?\s+mais\s*proxim)/.test(t);
+// 1) “o mais próximo / primeira data / mais cedo possível”
+const wantsNearest =
+  /\b(mais\s*proxim[oa]|data\s*mais\s*proxim[oa]|primeir[oa]\s*(data|horario)|mais\s*cedo(\s*possivel)?)\b/.test(t);
 
-  if (wantsNearest && (getConversation(from)?.mode || null) !== "cancel") {
+// 2) “tem livre / quando tem / horários disponíveis / tem agenda”
+const wantsAvailability =
+  /\b(quando\s*tem\s*(livre|agenda|disponivel)|tem\s*(horario|agenda)|horarios?\s*disponiveis|quais\s*horarios|quando\s*(pode|daria))\b/.test(t);
+
+// dispare a listagem se for qualquer uma das intenções acima
+if ((wantsNearest || wantsAvailability) && (getConversation(from)?.mode || null) !== "cancel") {
     const baseISO = new Date().toISOString();
 
     // pega próximos dias úteis, limitado à sua página
