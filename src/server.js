@@ -20,18 +20,89 @@ import { listAvailableSlots } from "./slots.esm.js";
 // <<< FIM CALENDÁRIO
 
 // ===== Helper de envio unificado (Z-API ou Gupshup) =====
-async function sendText({ to, text }) {
-  // Escolhe o provedor pelo .env (padrão: Gupshup)
-  const provider = (process.env.WHATSAPP_PROVIDER || "GUPSHUP").toUpperCase();
+// Versão "segura": jitter, cooldown por contato e deduplicação
+const _lastSendAtByPhone = new Map(); // phone -> timestamp
+const _lastPayloadByPhone = new Map(); // phone -> { text, at }
 
+function _sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+function _randInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+
+function _isQuietHours(now = new Date()) {
+  try {
+    const cfg = String(process.env.QUIET_HOURS || "").trim(); // ex: "21-08"
+    if (!cfg) return false;
+    const [h1, h2] = cfg.split("-").map(x => parseInt(x, 10));
+    if (Number.isNaN(h1) || Number.isNaN(h2)) return false;
+    const hr = now.getHours();
+    if (h1 < h2) return hr >= h1 && hr < h2;        // 10-18
+    return hr >= h1 || hr < h2;                     // 21-08 (vira a meia-noite)
+  } catch { return false; }
+}
+
+async function sendText({ to, text }) {
+  // mantém compatibilidade com o resto do código
+  const provider = (process.env.WHATSAPP_PROVIDER || "GUPSHUP").toUpperCase();
+  const phone = (to || "").toString().replace(/\D/g, "");
+  const msg = String(text || "");
+
+  // 1) Deduplicação: ignora se mesma mensagem foi enviada nos últimos X segundos
+  try {
+    const DEDUPE_WINDOW_MS = parseInt(process.env.DEDUPE_WINDOW_MS || "30000", 10);
+    const last = _lastPayloadByPhone.get(phone);
+    if (last && last.text === msg && Date.now() - last.at < DEDUPE_WINDOW_MS) {
+      console.log("[sendText] dedupe: ignorando repetição para", phone);
+      return { skipped: "dedupe" };
+    }
+  } catch {}
+
+  // 2) Quiet hours para primeiro contato frio (não bloqueia respostas)
+  // Se QUIET_ALLOW_REPLY=true, liberamos quando houve mensagem do usuário agora.
+  try {
+    const allowReply = String(process.env.QUIET_ALLOW_REPLY || "true").toLowerCase() === "true";
+    if (_isQuietHours() && allowReply) {
+      // Se não existe conversa recente, evite iniciar push frio neste horário
+      const conv = conversations.get(phone);
+      const hasRecentUserMsg = !!(conv && conv.messages && conv.messages.some(m => m.role === "user"));
+      if (!hasRecentUserMsg) {
+        console.log("[sendText] quiet-hours: evitando iniciar conversa com", phone);
+        return { skipped: "quiet-hours" };
+      }
+    }
+  } catch {}
+
+  // 3) Intervalo mínimo por contato (anti-rajada)
+  try {
+    const MIN_INTERVAL = parseInt(process.env.MIN_INTERVAL_PER_CONTACT_MS || "15000", 10);
+    const lastAt = _lastSendAtByPhone.get(phone) || 0;
+    const delta = Date.now() - lastAt;
+    if (delta < MIN_INTERVAL) {
+      const wait = MIN_INTERVAL - delta;
+      console.log(`[sendText] cooldown ${wait}ms para ${phone}`);
+      await _sleep(wait);
+    }
+  } catch {}
+
+  // 4) Jitter humano (2–6s por default)
+  try {
+    const MIN_D = parseInt(process.env.MIN_DELAY_MS || "2000", 10);
+    const MAX_D = parseInt(process.env.MAX_DELAY_MS || "6000", 10);
+    const jitter = _randInt(MIN_D, Math.max(MIN_D, MAX_D));
+    await _sleep(jitter);
+  } catch {}
+
+  // 5) Envio pelo provedor selecionado (sem alterar sua lógica)
+  let out;
   if (provider === "ZAPI") {
-    // Z-API exige apenas dígitos (DDI+DDD+NÚMERO)
-    const phone = (to || "").toString().replace(/\D/g, "");
-    return sendZapiText({ phone, message: text });
+    out = await sendZapiText({ phone, message: msg });
+  } else {
+    out = await sendWhatsAppText({ to, text: msg });
   }
 
-  // Padrão: mantém seu fluxo atual no Gupshup
-  return sendWhatsAppText({ to, text });
+  // 6) Marcações para as próximas proteções
+  _lastSendAtByPhone.set(phone, Date.now());
+  _lastPayloadByPhone.set(phone, { text: msg, at: Date.now() });
+
+  return out;
 }
 // ===== FIM do helper =======================================================
 
