@@ -234,10 +234,10 @@ app.post("/webhook/zapi", async (req, res) => {
 // =====================
 // Memória por telefone
 // =====================
-const MEMORY_TTL_HOURS = Number(process.env.MEMORY_TTL_HOURS || 24);
+const MEMORY_TTL_HOURS = Number(process.env.MEMORY_TTL_HOURS || 48);
 const MEMORY_MAX_MESSAGES = Number(process.env.MEMORY_MAX_MESSAGES || 20);
 const MAX_CONTEXT_CHARS = Number(process.env.MAX_CONTEXT_CHARS || 20000);
-const SLOTS_PAGE_SIZE = Number(process.env.SLOTS_PAGE_SIZE || 4);
+
 
 const conversations = new Map();
 
