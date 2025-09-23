@@ -964,6 +964,7 @@ if (aiNorm.intent === INTENTS.INFO) {
     convMem.after = "schedule";      // <- sinaliza que após cancelar vamos agendar
     convMem.cancelCtx = { phone: "", name: "", dateISO: null, timeHHMM: null, chosenEvent: null };
     convMem.updatedAt = Date.now();
+    convMem.flow = "cancel";
 
     await sendText({
   to: from,
@@ -978,8 +979,11 @@ return;
   if (cancelIntent.test(userText)) {
     convMem.mode = "cancel";
     convMem.after = null;            // cancelamento simples
+    convMem.flow = null;
     convMem.cancelCtx = { phone: "", name: "", dateISO: null, timeHHMM: null, chosenEvent: null };
     convMem.updatedAt = Date.now();
+    convMem.flow = "cancel";
+
 
     
 await sendText({
@@ -1098,6 +1102,8 @@ if (ctx.awaitingConfirm) {
   ctx.awaitingConfirm = false;
   ctx.confirmed = true;
   convMem.updatedAt = Date.now();
+    convMem.flow = "schedule";
+
   // segue o fluxo adiante até o bloco "Cancelar no Google"
 } else if (no) {
     // não quer mais cancelar → volta para IA ajudar
@@ -1317,6 +1323,8 @@ if (!matches.length) {
       await sendText({ to: from, text: "Encontrei mais de um agendamento. Escolha **1**, **2**, **3**...\n" + linhas });
       convMem.cancelCtx.matchList = filtered;
       convMem.updatedAt = Date.now();
+      convMem.flow = "schedule";
+
       return;
     } else {
       // nada mesmo — deixa cair no texto padrão abaixo
@@ -1352,6 +1360,7 @@ if (!matches.length) {
       });
       convMem.cancelCtx.matchList = matches;
       convMem.updatedAt = Date.now();
+      
       return;
     }
 
@@ -1598,6 +1607,8 @@ try {
         const convMem = ensureConversation(from);
         convMem.lastSlots = slots;
         convMem.updatedAt = Date.now();
+        convMem.flow = "schedule";
+
       }
       return;
     }
@@ -1778,6 +1789,7 @@ if (dayStart.getTime() < today0.getTime()) {
         const convMem = ensureConversation(from);
         convMem.lastSlots = slots;
         convMem.updatedAt = Date.now();
+convMem.flow = "schedule";
 
         const { name } = extractPatientInfo({ payload: p, phone: from, conversation: getConversation(from) });
 
@@ -1949,6 +1961,27 @@ if ((wantsNearest || wantsAvailability) && (getConversation(from)?.mode || null)
   }
 }
 // ============================================================================ 
+// === Desvio de assunto: pergunta/dúvida durante o fluxo ===
+// Se o paciente fizer uma pergunta enquanto está em "schedule" ou "cancel",
+// deixamos a IA responder normalmente, mas marcamos para "puxar de volta" logo depois.
+{
+  const convNow = ensureConversation(from);
+  const t = String(userText || "").trim();
+
+  // heurística leve de pergunta/dúvida (sem confundir com formato de data/opção)
+  const isQuestion =
+    /[?]\s*$/.test(t) ||
+    /\b(como|qual|quanto|onde|quando|posso|pode|tem|valor|pre[cç]o|end(e|er)ec[oó]|link|telemedicina)\b/i.test(t);
+
+  const looksOption = /^\s*(op[cç][aã]o\s*)?\d+[).]?\s*$/i.test(t);
+  const hasDateOrTime = /(\b\d{1,2}[\/\-]\d{1,2}\b)|\b\d{1,2}:\d{2}\b/.test(t);
+
+  if (isQuestion && !looksOption && !hasDateOrTime) {
+    // Guarda para retomar após a resposta da IA
+    convNow.returnAfterAnswer = convNow.flow || null;
+    convNow.updatedAt = Date.now();
+  }
+}
 
     // Resposta da secretária (IA)
     const answer = await askCristina({ userText: composed, userPhone: String(from) });
@@ -2161,6 +2194,49 @@ if (finalAnswer) {
 
   appendMessage(from, "assistant", finalAnswer);
   await sendText({ to: from, text: finalAnswer });
+  // === Retomada suave do fluxo, se marcado ===
+{
+  const convNow = ensureConversation(from);
+  const goBack = convNow.returnAfterAnswer || null;
+
+  if (goBack === "schedule") {
+    // Se estamos em agendamento, ofereça o "gancho" certo:
+    let followUp;
+    if (Array.isArray(convNow.lastSlots) && convNow.lastSlots.length) {
+      const linhas = convNow.lastSlots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`).join("\n");
+      followUp =
+        "Podemos seguir com o agendamento agora. " +
+        'Responda com **opção N** (ex.: "opção 2") ou diga **data e horário** (ex.: "24/09 14:00").\n\n' +
+        linhas;
+    } else {
+      followUp =
+        "Quer seguir com o agendamento? Diga uma **data** (ex.: 24/09) " +
+        "ou peça os **horários mais próximos**.";
+    }
+    appendMessage(from, "assistant", followUp);
+    await sendText({ to: from, text: followUp });
+  }
+
+  if (goBack === "cancel") {
+    // Retoma o cancelamento pedindo os campos leves (sem quebrar nada existente)
+    const ctx = (convNow.cancelCtx = convNow.cancelCtx || { phone: "", name: "", dateISO: null, timeHHMM: null, chosenEvent: null });
+    const faltantes = [];
+    if (!ctx.phone) faltantes.push("**Telefone** (DDD + número)");
+    if (!ctx.name)  faltantes.push("**Nome completo**");
+    const pedir = faltantes.length
+      ? `Envie ${faltantes.join(" e ")}.`
+      : "Se puder, confirme **data** (ex.: 26/09) e **horário** (ex.: 09:00).";
+    const msg =
+      "Podemos retomar o **cancelamento** agora.\n" +
+      pedir;
+    appendMessage(from, "assistant", msg);
+    await sendText({ to: from, text: msg });
+  }
+
+  // Limpa o marcador para não repetir em cada turno
+  if (goBack) convNow.returnAfterAnswer = null;
+}
+
 }
 
 // <-- fecha o try global do handleInbound
