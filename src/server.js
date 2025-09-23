@@ -18,6 +18,64 @@ import { parseCandidateDateTime } from "./utils.esm.js";
 import { isSlotBlockedOrBusy } from "./availability.esm.js";
 import { listAvailableSlots } from "./slots.esm.js";
 // <<< FIM CALENDÁRIO
+// ============ IA REALIGNER: INTENT + SLOTS + CONFUSION GUARD ============
+function _normalizeText(s) {
+  return (s || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .trim();
+}
+const INTENTS = { SCHEDULE: "schedule", CANCEL: "cancel", RESCHEDULE: "reschedule", INFO: "info" };
+
+function _looksLikeFAQ(t) {
+  return /(duvida|dúvida|como funciona|preco|valor|quanto custa|pagamento|plano|preparo|jejum|documento|endereco|endereço|local|prazo|retorno|telemedicina|presencial|horario|horário|duracao|duração|tempo|remedio|medicamento|contraindicacao|contraindicação)/i.test(t);
+}
+
+function isConfusingMessage({ text, retries = 0, foundEvent = true }) {
+  const t = _normalizeText(text);
+  const hasSchedule = /(agendar|marcar|consulta|opcao\s*\d+)/i.test(t);
+  const hasCancel   = /(cancelar|desmarcar|excluir|apagar)/i.test(t);
+  const hasRebook   = /(remarcar|reagendar|mudar horario|trocar data)/i.test(t);
+  const hasInfo     = _looksLikeFAQ(t);
+  const mixedIntents = [hasSchedule, hasCancel, hasRebook, hasInfo].filter(Boolean).length > 1;
+
+  const looksLikeDump =
+    /(\d{2}\/\d{2}|\d{1,2}:\d{2}|\+\d{6,}|\d{10,})/.test(t) &&
+    /(anos|idade|modalidade|presencial|telemedicina|medicina da dor|anestesia|nome)/i.test(t);
+
+  return mixedIntents || looksLikeDump || !foundEvent || retries >= 1;
+}
+
+// Usa seu cliente atual de IA (askCristina)
+async function callAIRealigner({ text, context }) {
+  const promptSystem = `Você é uma secretária médica. Identifique a intenção do paciente:
+- "schedule" (agendar),
+- "cancel" (cancelar),
+- "reschedule" (remarcar),
+- "info" (tirar dúvida sobre a consulta: valores, preparo, endereço, modalidade, etc).
+Extraia slots quando fizer sentido: {nome, telefone, especialidade, modalidade, dataISO(YYYY-MM-DD), hora(HH:mm)}.
+Responda APENAS com JSON válido no formato:
+{"intent":"schedule|cancel|reschedule|info","slots":{...},"reply":"mensagem curta e clara para o paciente"}.`;
+
+  const raw = await askCristina({
+    system: promptSystem,
+    user: text,
+    context
+  });
+
+  // se a sua askCristina já retornar objeto, mantenha; se vier string, tente parse:
+  let ai;
+  try { ai = typeof raw === "string" ? JSON.parse(raw) : raw; } catch { ai = {}; }
+  return ai;
+}
+
+function mapAIToFlow(aiJson) {
+  const intent = aiJson?.intent || INTENTS.SCHEDULE;
+  const slots  = aiJson?.slots || {};
+  const reply  = aiJson?.reply || "Entendi. Vou te direcionar certinho. Vamos confirmar rapidinho.";
+  return { intent, slots, reply };
+}
 
 // === CONFIG QUE CONTROLA QUANTAS OPÇÕES MOSTRAR POR PÁGINA ===
 const SLOTS_PAGE_SIZE = parseInt(process.env.SLOTS_PAGE_SIZE || "4", 10); // 4 pedidas
@@ -728,6 +786,35 @@ function inferReasonFromText(raw) {
 
   return null; // não conseguiu inferir
 }
+async function startInfoFlow(contactId, { prefill = {}, originalText = "" } = {}) {
+  const t = _normalizeText(originalText);
+
+  // Respostas rápidas por regra — edite à vontade:
+  if (/preco|valor|quanto custa|pagamento|plano/.test(t)) {
+    return sendText({ to: contactId, text: "Sobre valores: informamos no momento do agendamento. Posso te direcionar para agendar agora?" });
+  }
+  if (/preparo|jejum/.test(t)) {
+    return sendText({ to: contactId, text: "Para a consulta pré-anestésica, geralmente não é necessário jejum. Quer ajuda para agendar?" });
+  }
+  if (/endereco|endereço|local/.test(t)) {
+    return sendText({ to: contactId, text: "Atendemos em Piracicaba (detalhes no lembrete do agendamento). Prefere presencial ou telemedicina?" });
+  }
+  if (/telemedicina|online|virtual|video|vídeo/.test(t)) {
+    return sendText({ to: contactId, text: "Temos telemedicina para a pré-anestésica quando aplicável. Posso te ajudar a agendar?" });
+  }
+
+  // Se não casou, peça uma resposta curta da IA (segura):
+  const ai = await askCristina({
+    system: `Responda, em no máximo 2 frases, uma dúvida objetiva sobre a consulta.
+Não confirme agendamento. Ofereça ajuda para agendar no final, de forma neutra.`,
+    user: originalText
+  });
+
+  let reply;
+  try { reply = typeof ai === "string" ? JSON.parse(ai).reply : (ai.reply || null); } catch { reply = null; }
+  reply = reply || "Posso esclarecer melhor sua dúvida. Se quiser, também posso te ajudar a agendar.";
+  return sendText({ to: contactId, text: reply });
+}
 
 function trimToLastN(arr, n) {
   if (arr.length <= n) return arr;
@@ -812,7 +899,28 @@ if (isPureGreeting) {
   // (sem return)
 }
 
-  
+  // === [PATCH A] PARA-QUEDAS DE IA: recolocar paciente OU captar mudança de intenção (inclui "info")
+{
+  const state = ensureConversation(from); // você já usa conversations; reaproveitamos
+  if (isConfusingMessage({
+    text: userText,
+    retries: (state.retries || 0),
+    foundEvent: true // nos fluxos internos ajustamos quando falhar busca
+  })) {
+    const aiRaw  = await callAIRealigner({ text: userText, context: { lastState: state }});
+    const aiNorm = mapAIToFlow(aiRaw);
+
+    await sendText({ to: from, text: aiNorm.reply });
+
+    if (aiNorm.intent === INTENTS.SCHEDULE)   { /* seu iniciador de agendar */ userText = "Quero agendar"; }
+    if (aiNorm.intent === INTENTS.CANCEL)     { /* seu iniciador de cancelar */ userText = "Quero cancelar"; }
+    if (aiNorm.intent === INTENTS.RESCHEDULE) { /* seu iniciador de remarcar */ userText = "Quero remarcar"; }
+    if (aiNorm.intent === INTENTS.INFO)       { return startInfoFlow(from, { prefill: aiNorm.slots, originalText: userText }); }
+    // Observação: acima forcei gatilhos de texto leves para cair nas regras que você já tem.
+    // Se preferir, substitua por chamadas diretas aos seus iniciadores (ex.: startScheduleFlow(...)).
+  }
+}
+
 // === INTENÇÃO DE CANCELAMENTO / REAGENDAMENTO ===
 {
   const convMem = ensureConversation(from);
@@ -1123,6 +1231,78 @@ try {
         faltantes.length
           ? `Tente me enviar ${faltantes.join(" e ")} (pode ser só um deles)`
           : "Se puder, me confirme a **data** (ex.: 26/09) e o **horário** (ex.: 09:00) do agendamento";
+
+      // === [PATCH B] FALLBACK IA QUANDO BUSCA FALHA NO CANCELAR (colocar imediatamente ACIMA do "Não encontrei...")
+if (!matches.length) {
+  // Tentar IA para reorganizar a frase e refazer a busca / redirecionar intenção
+  const aiRaw  = await callAIRealigner({
+    text: userText,
+    context: { expected: INTENTS.CANCEL, have: { phone: ctx.phone, name: ctx.name, dateISO: ctx.dateISO, timeHHMM: ctx.timeHHMM } }
+  });
+  const aiNorm = mapAIToFlow(aiRaw);
+
+  if (aiNorm.intent === INTENTS.CANCEL) {
+    const merged = {
+      phone:      aiNorm.slots.telefone ? normalizePhoneForLookup(aiNorm.slots.telefone) : ctx.phone,
+      name:       aiNorm.slots.nome     || ctx.name,
+      dateISO:    aiNorm.slots.dataISO  || ctx.dateISO,
+      timeHHMM:   aiNorm.slots.hora     || ctx.timeHHMM
+    };
+
+    // refaz busca com dados “limpos”
+    const phoneForLookup = merged.phone || (normalizePhoneForLookup(conversations.get(from)?.lastKnownPhone) || "");
+    const nameForLookup  = merged.name  || "";
+
+    const rawEvents = await findPatientEvents({
+      phone: phoneForLookup, name: nameForLookup, daysBack: 180, daysAhead: 365
+    });
+
+    let filtered = rawEvents.filter(ev => eventMatchesIdentity(ev, { phone: phoneForLookup, name: nameForLookup }));
+    if (merged.dateISO) {
+      const dayStart = new Date(merged.dateISO);
+      const dayEnd   = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+      filtered = filtered.filter(ev => {
+        const dt = ev.startISO ? new Date(ev.startISO) : null;
+        if (!dt) return false;
+        if (dt < dayStart || dt >= dayEnd) return false;
+        if (merged.timeHHMM) {
+          const hh = String(dt.getHours()).padStart(2, "0");
+          const mi = String(dt.getMinutes()).padStart(2, "0");
+          const hhmm = `${hh}:${mi}`;
+          if (hhmm !== merged.timeHHMM) {
+            const target = new Date(`${dayStart.toISOString().slice(0,10)}T${merged.timeHHMM}:00`);
+            const diff = Math.abs(dt.getTime() - target.getTime());
+            if (diff > 15 * 60 * 1000) return false;
+          }
+        }
+        return true;
+      });
+    }
+
+    if (filtered.length === 1) {
+      ctx.chosenEvent = filtered[0];
+      await sendText({ to: from, text: aiNorm.reply || "Agora localizei seu agendamento." });
+      // deixa seguir para o seu bloco de confirmação/cancelamento existente
+    } else if (filtered.length > 1) {
+      const linhas = filtered.map((ev, i) => `${i + 1}) ${ev.dayLabel} ${ev.timeLabel} — ${ev.summary || "Consulta"}`).join("\n");
+      await sendText({ to: from, text: "Encontrei mais de um agendamento. Escolha **1**, **2**, **3**...\n" + linhas });
+      convMem.cancelCtx.matchList = filtered;
+      convMem.updatedAt = Date.now();
+      return;
+    } else {
+      // nada mesmo — deixa cair no texto padrão abaixo
+    }
+  } else {
+    // Mudou de ideia: respeitar e redirecionar
+    if (aiNorm.intent === INTENTS.RESCHEDULE) { convMem.mode = null; return startInfoFlow(from, { originalText: "Quero remarcar" }); }
+    if (aiNorm.intent === INTENTS.SCHEDULE)   { convMem.mode = null; userText = "Quero agendar"; }
+    if (aiNorm.intent === INTENTS.INFO)       { convMem.mode = null; return startInfoFlow(from, { prefill: aiNorm.slots, originalText: userText }); }
+  }
+
+  // (Se continuar sem matches, o seu texto padrão "Não encontrei..." permanece logo abaixo)
+}
+
+      
       await sendText({
         to: from,
         text:
