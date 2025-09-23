@@ -34,7 +34,7 @@ function _looksLikeFAQ(t) {
 
 function isConfusingMessage({ text, retries = 0, foundEvent = true }) {
   const t = _normalizeText(text);
-  const hasSchedule = /(agendar|marcar|consulta|opcao\s*\d+)/i.test(t);
+  const hasSchedule = /(agendar|marcar|opcao\s*\d+)/i.test(t);
   const hasCancel   = /(cancelar|desmarcar|excluir|apagar)/i.test(t);
   const hasRebook   = /(remarcar|reagendar|mudar horario|trocar data)/i.test(t);
   const hasInfo     = _looksLikeFAQ(t);
@@ -73,7 +73,7 @@ Responda APENAS com JSON válido no formato:
 function mapAIToFlow(aiJson) {
   const intent = aiJson?.intent || INTENTS.SCHEDULE;
   const slots  = aiJson?.slots || {};
-  const reply  = aiJson?.reply || "Entendi. Vou te direcionar certinho. Vamos confirmar rapidinho.";
+  const reply  = aiJson?.reply || "";
   return { intent, slots, reply };
 }
 
@@ -118,6 +118,22 @@ async function sendText({ to, text }) {
   // remove *negrito* e ***variações*** sem quebrar o texto
   msg = msg.replace(/\*{1,3}([^*]+)\*{1,3}/g, "$1");
 }
+// --- BLOQUEIO ANTI-"AUTOLISTA 1..5" NO MESMO TURNO DO PARAQUEDAS ---
+try {
+  const conv = getConversation(phone);
+  if (conv?.justPickedOption) {
+    // Qualquer texto que comece com "Para (confirmar|finalizar) o agendamento ... me forneça as seguintes informações"
+    const looksLikeChecklist =
+      /para\s+(confirmar|finalizar)\s+o\s+agendamento[\s\S]*?(1\)\s*nome|2\)\s*idade|3\)\s*telefone|4\)\s*motivo|5\)\s*modalidade)/i
+        .test(msg);
+
+    if (looksLikeChecklist) {
+      // Não envie essa “autolista” neste turno; a IA já vai pedir só o que faltar
+      delete conv.justPickedOption;
+      return { skipped: "parachute-blocked-autolist" };
+    }
+  }
+} catch {}
 
   // 1) Deduplicação: ignora se mesma mensagem foi enviada nos últimos X segundos
   try {
