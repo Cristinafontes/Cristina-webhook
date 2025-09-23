@@ -1513,8 +1513,7 @@ try {
       const convFlag = ensureConversation(from);
 convFlag.justPickedOption = true; // evita autolista no mesmo turno
 // evita relistar/repensar a mesma página de opções no próximo turno
-const convMem = ensureConversation(from);
-convMem.lastSlots = [];
+ensureConversation(from).lastSlots = [];
 
       // segue o fluxo normal (sem return)
     }
