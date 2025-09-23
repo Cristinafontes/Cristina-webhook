@@ -910,12 +910,25 @@ if (isPureGreeting) {
     const aiRaw  = await callAIRealigner({ text: userText, context: { lastState: state }});
     const aiNorm = mapAIToFlow(aiRaw);
 
-    await sendText({ to: from, text: aiNorm.reply });
+// >>> ADIÇÃO: marca que esse turno veio do paraquedas para não relistar
+const conv = ensureConversation(from);
+conv.justPickedOption = true;
 
-    if (aiNorm.intent === INTENTS.SCHEDULE)   { /* seu iniciador de agendar */ userText = "Quero agendar"; }
-    if (aiNorm.intent === INTENTS.CANCEL)     { /* seu iniciador de cancelar */ userText = "Quero cancelar"; }
-    if (aiNorm.intent === INTENTS.RESCHEDULE) { /* seu iniciador de remarcar */ userText = "Quero remarcar"; }
-    if (aiNorm.intent === INTENTS.INFO)       { return startInfoFlow(from, { prefill: aiNorm.slots, originalText: userText }); }
+// >>> ADIÇÃO: guarda slots que a IA já extraiu (nome, tel, modalidade, etc.)
+if (aiNorm.slots && Object.keys(aiNorm.slots).length) {
+  conv.prefillSlots = { ...(conv.prefillSlots || {}), ...aiNorm.slots };
+}
+
+await sendText({ to: from, text: aiNorm.reply });
+
+// Mantém os redirecionamentos, só não dispara fluxo novo
+if (aiNorm.intent === INTENTS.SCHEDULE)   { userText = "Quero agendar"; }
+if (aiNorm.intent === INTENTS.CANCEL)     { userText = "Quero cancelar"; }
+if (aiNorm.intent === INTENTS.RESCHEDULE) { userText = "Quero remarcar"; }
+if (aiNorm.intent === INTENTS.INFO) {
+  return startInfoFlow(from, { prefill: aiNorm.slots, originalText: userText });
+}
+
     // Observação: acima forcei gatilhos de texto leves para cair nas regras que você já tem.
     // Se preferir, substitua por chamadas diretas aos seus iniciadores (ex.: startScheduleFlow(...)).
   }
@@ -1855,6 +1868,14 @@ try {
         }
         body = kept.reverse().join("\n");
       }
+// ——— se o para-quedas capturou campos, injete no contexto
+const convForPrefill = ensureConversation(from);
+if (convForPrefill.prefillSlots && Object.keys(convForPrefill.prefillSlots).length) {
+  lines.push(
+    "Cristina (contexto interno): slots já informados pelo paciente = " +
+    JSON.stringify(convForPrefill.prefillSlots)
+  );
+}
 
       composed =
         `Contexto de conversa (mais recente por último):\n` +
@@ -1915,6 +1936,14 @@ if ((wantsNearest || wantsAvailability) && (getConversation(from)?.mode || null)
 
     // Resposta da secretária (IA)
     const answer = await askCristina({ userText: composed, userPhone: String(from) });
+
+    // ——— não deixe os prefillSlots vazar por muitos turnos
+const c = ensureConversation(from);
+if (c.prefillSlots) {
+  // mantém por um turno; se a IA ainda precisar, ela pede de novo
+  delete c.prefillSlots;
+}
+
 
     // === SE A IA MENCIONAR QUE VAI ENVIAR HORÁRIOS, ANEXA A LISTA GERADA DO CALENDÁRIO ===
 let finalAnswer = answer;
