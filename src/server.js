@@ -1946,93 +1946,125 @@ if (finalAnswer) {
   appendMessage(from, "assistant", finalAnswer);
   await sendText({ to: from, text: finalAnswer });
 }
+// ======================================================================
+// === [NOVO] FALLBACK DE IA: orienta o paciente sem quebrar o seu fluxo
+// ======================================================================
+try {
+  // Protege o escopo e garante o número (_from) mesmo que "from" não esteja visível aqui
+  const _from =
+    (typeof from !== "undefined" && from) ||
+    (typeof p !== "undefined" && (p.sender?.phone || p.from || p.source)) ||
+    (typeof req !== "undefined" && (req.body?.from || req.body?.sender?.phone)) ||
+    "";
+
+  if (!_from) {
+    console.error("[IA fallback] sem telefone (_from)");
+    return; // não há para quem responder; evita travar
+  }
+
+  // Mensagem do usuário neste turno (usa o que o seu fluxo já resolveu)
+  const _userText =
+    (typeof userText !== "undefined" && userText) ||
+    (typeof text !== "undefined" && text) ||
+    "";
+
+  // Snapshot leve da conversa para a IA entender contexto, sem executar ações
+  const convSnap = getConversation(_from) || { messages: [] };
+  const stateHints = {
+    mode: convSnap.mode || null, // ex.: "cancel" quando no modo cancelamento
+    hasOpenSlotsPage:
+      Array.isArray(convSnap.lastSlots) && convSnap.lastSlots.length > 0,
+    justPickedOption: !!convSnap.justPickedOption,
+    patientName: convSnap.patientName || null,
+    lastKnownPhone: convSnap.lastKnownPhone || null,
+  };
+
+  // Regras da secretária: NUNCA executar ação — só orientar e devolver ao fluxo
+  const SYSTEM_PROMPT =
+    "Você é a 'Cristina', secretária virtual da Dra. Jenifer. " +
+    "Regra de ouro: NUNCA execute ações (agendar, cancelar, remarcar). " +
+    "Você APENAS orienta com frases curtas e claras, guiando o paciente para as palavras-chave " +
+    "que o servidor já entende (ex.: 'remarcar', 'cancelar', 'mais', 'opção N', ou informar data/horário como 24/09 14:00). " +
+    "Se o paciente tiver dúvidas (preço, preparo, endereço, modalidade), responda e convide a voltar ao fluxo. " +
+    "Não prometa horários, não repita listas (o servidor envia). " +
+    "Se souber o nome do paciente, use {{nome}} como placeholder quando natural.";
+
+  // Histórico curto para dar noção de contexto à IA
+  const history = Array.isArray(convSnap.messages)
+    ? convSnap.messages.slice(-12)
+    : [];
+
+  const aiMessages = [
+    {
+      role: "system",
+      content:
+        SYSTEM_PROMPT +
+        "\n\nDicas de estado (JSON): " +
+        JSON.stringify(stateHints),
+    },
+    ...history,
+    { role: "user", content: _userText || "" },
+  ];
+
+  // Chamada defensiva à IA (qualquer assinatura da sua askCristina)
+  let aiReply = "";
+  try {
+    const ai = await askCristina(aiMessages);
+    aiReply =
+      (ai && (ai.content || ai.text || (typeof ai === "string" ? ai : ""))) ||
+      "";
+  } catch (e) {
+    console.error("[askCristina] erro:", e?.message || e);
+  }
+
+  // Resposta padrão caso a IA não retorne nada útil
+  if (!aiReply || aiReply.trim().length < 2) {
+    aiReply =
+      "Claro! Posso te orientar.\n" +
+      "• Para **remarcar**, diga: *remarcar* (posso pedir telefone/nome para localizar).\n" +
+      "• Para **cancelar**, diga: *cancelar*.\n" +
+      "• Para **agendar**, informe uma **data e horário** (ex.: 24/09 14:00) ou peça opções com *mais*.\n" +
+      "Se tiver dúvidas (preparo, valores, endereço), me fale que eu explico e te trago de volta ao fluxo.";
+  }
+
+  // Envia e registra no histórico
+  await sendText({ to: _from, text: aiReply });
+  appendMessage(_from, "assistant", aiReply);
+
+  // Desarma o “freio” para o próximo turno (evita prender a listagem)
+  const convFlag = ensureConversation(_from);
+  convFlag.justPickedOption = false;
+  convFlag.updatedAt = Date.now?.() || Date.now();
+
+  return; // Fim do fallback: não deixa cair no catch global
+} catch (e) {
+  console.error("[IA fallback] erro inesperado:", e?.message || e);
+  // Rede de segurança: não travar o atendimento
+  try {
+    const _from =
+      (typeof from !== "undefined" && from) ||
+      (typeof p !== "undefined" && (p.sender?.phone || p.from || p.source)) ||
+      (typeof req !== "undefined" && (req.body?.from || req.body?.sender?.phone)) ||
+      "";
+    if (_from) {
+      await sendText({
+        to: _from,
+        text:
+          "Posso te ajudar daqui! Se quiser **remarcar**, diga *remarcar*; para **cancelar**, diga *cancelar*; " +
+          "ou me informe uma **data e horário** (ex.: 24/09 14:00) para eu mostrar as opções.",
+      });
+    }
+  } catch (_) {
+    // ignora para não derrubar o processo
+  }
+  return;
+}
+// ============================ FIM FALLBACK IA ===============================
 
 // <-- fecha o try global do handleInbound
 } catch (err) {
   console.error("ERR inbound:", err?.response?.data || err);
 }
-// ======================================================================
-// === [NOVO] FALLBACK DE IA: orienta o paciente sem quebrar o seu fluxo
-// ======================================================================
-try {
-  const convSnap = getConversation(from) || { messages: [] };
-
-  // Proteção para não cair aqui quando já atendido por outras regras
-  // (Se alguma regra anterior enviou mensagem e fez 'return;', nunca chega aqui.)
-  // Chegou aqui? Então nenhuma regra pegou → deixe a IA orientar.
-
-  // Contexto para a IA entender "estado" do fluxo sem acioná-lo diretamente:
-  const stateHints = {
-    mode: convSnap.mode || null,               // "cancel" quando no modo cancelamento
-    hasOpenSlotsPage: Array.isArray(convSnap.lastSlots) && convSnap.lastSlots.length > 0,
-    justPickedOption: !!convSnap.justPickedOption,
-    patientName: convSnap.patientName || null,
-    lastKnownPhone: convSnap.lastKnownPhone || null
-  };
-
-  // Prompt de sistema: A IA atua como secretária, mas NÃO agenda/cancela por conta própria.
-  const SYSTEM_PROMPT =
-    "Você é a 'Cristina', secretária virtual da Dra. Jenifer. " +
-    "Regra de ouro: NUNCA execute ações. Você APENAS orienta com linguagem simples e curta, " +
-    "mantendo o paciente no fluxo que já existe no servidor. " +
-    "Se o paciente quiser REMARCAR/CANCELAR, instrua-o a dizer palavras-chave (" +
-    "ex.: 'remarcar', 'cancelar') ou a enviar telefone/nome quando necessário. " +
-    "Se ele estiver indeciso (pescando datas) ou mudou de ideia no meio, acolha e redirecione. " +
-    "Se perguntar dúvidas (preço, preparo, endereço, modalidade), responda de forma útil e " +
-    "convide a voltar ao fluxo (ex.: 'posso te mostrar horários', 'diga remarcação', etc.). " +
-    "Não repita listas de horários (o servidor já envia). " +
-    "Quando for oportuno, use o nome do paciente se disponível (placeholder: {{nome}}).";
-
-  // Monta o histórico num formato clássico: [{role, content}, ...]
-  const history = Array.isArray(convSnap.messages) ? convSnap.messages.slice(-12) : [];
-  const aiMessages = [
-    { role: "system", content: SYSTEM_PROMPT + "\n\nDicas de estado (JSON): " + JSON.stringify(stateHints) },
-    ...history,
-    { role: "user", content: userText }
-  ];
-
-  // Chamamos a IA com tratamento defensivo para qualquer assinatura da sua askCristina
-  let aiReply = "";
-  try {
-    const ai = await askCristina(aiMessages);
-    aiReply = (ai && (ai.content || ai.text || (typeof ai === "string" ? ai : ""))) || "";
-  } catch (e) {
-    console.error("[askCristina] erro:", e?.message || e);
-  }
-
-  // Se a IA não retornou nada útil, devolve uma resposta neutra que incentiva o próximo passo
-  if (!aiReply || aiReply.trim().length < 2) {
-    aiReply =
-      "Claro! Posso te orientar.\n" +
-      "• Para **remarcar**, diga: *remarcar* (e me confirme telefone/nome se eu pedir).\n" +
-      "• Para **cancelar**, diga: *cancelar*.\n" +
-      "• Para **agendar**, você pode dizer uma data/horário (ex.: 24/09 14:00) ou pedir opções com *mais*.\n" +
-      "Se tiver dúvidas (preparo, valores, endereço), me fale que eu explico e te trago de volta ao fluxo.";
-  }
-
-  // Envia e grava no histórico
-  await sendText({ to: from, text: aiReply });
-  appendMessage(from, "assistant", aiReply);
-
-  // IMPORTANTE: limpar o "justPickedOption" (ele bloqueia a autolista só no turno atual)
-  if (convSnap) {
-    convSnap.justPickedOption = false;
-    convSnap.updatedAt = Date.now();
-  }
-
-  return;
-} catch (e) {
-  console.error("[IA fallback] erro inesperado:", e?.message || e);
-  // Última rede de segurança (não travar):
-  await sendText({
-    to: from,
-    text:
-      "Posso te ajudar daqui! Se quiser **remarcar**, diga *remarcar*; para **cancelar**, diga *cancelar*; " +
-      "ou me informe uma **data e horário** (ex.: 24/09 14:00) para eu mostrar as opções."
-  });
-  return;
-}
-// ============================ FIM FALLBACK IA ===============================
 
 // <-- fecha a função handleInbound
 }
