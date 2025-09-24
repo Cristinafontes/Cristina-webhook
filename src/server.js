@@ -261,6 +261,22 @@ function ensureConversation(phone) {
   conversations.set(phone, c);
   return c;
 }
+// === CONTROLE DE APRESENTAÇÃO / ESTÁGIO DO FLUXO ===
+function canGreetNow(conv) {
+  if (!conv) return true;
+  // Nunca cumprimentar se há fluxo ativo
+  if (
+    conv.stage === "collecting" ||
+    conv.stage === "awaiting_confirmation" ||
+    conv.stage === "awaiting_cancel" ||
+    conv.stage === "rescheduling" ||
+    conv.stage === "scheduled"
+  ) return false;
+  // Evita reapresentação em janela curta
+  const now = Date.now();
+  if (conv.greetedAt && now - conv.greetedAt < 45_000) return false;
+  return true;
+}
 
 function formatBrazilPhone(raw) {
   const digits = String(raw || "").replace(/\D/g, "");
@@ -1948,7 +1964,18 @@ if (finalAnswer) {
 }
 // ======================================================================
 // === [NOVO] FALLBACK DE IA: orienta o paciente sem quebrar o seu fluxo
-// ======================================================================
+// Padrões que a IA usa (ajuste se o seu prompt mudar)
+const ASK_CONFIRM_RE = /(posso prosseguir|posso agendar|confirmar o agendamento|confirma o agendamento|deseja que eu agende\??)/i;
+// Frase cabalística típica que contém data e hora (ajuste se necessário)
+const TRIGGER_CREATE_RE = /posso agendar sua consulta.*?\b(\d{1,2}\/\d{1,2})\b.*?\b(\d{1,2}:\d{2})\b/i;
+
+// Anti-duplicação simples para a resposta da IA
+function aiFingerprint(s) {
+  try { return (s || "").trim().toLowerCase().replace(/\s+/g, " ").slice(0, 400); }
+  catch { return (s || ""); }
+}
+
+    
 try {
   // Protege o escopo e garante o número (_from) mesmo que "from" não esteja visível aqui
   const _from =
@@ -1981,18 +2008,29 @@ try {
 
   // Regras da secretária: NUNCA executar ação — só orientar e devolver ao fluxo
   const SYSTEM_PROMPT =
-    "Você é a 'Cristina', secretária virtual da Dra. Jenifer. " +
-    "Regra de ouro: NUNCA execute ações (agendar, cancelar, remarcar). " +
-    "Você APENAS orienta com frases curtas e claras, guiando o paciente para as palavras-chave " +
-    "que o servidor já entende (ex.: 'remarcar', 'cancelar', 'mais', 'opção N', ou informar data/horário como 24/09 14:00). " +
-    "Se o paciente tiver dúvidas (preço, preparo, endereço, modalidade), responda e convide a voltar ao fluxo. " +
-    "Não prometa horários, não repita listas (o servidor envia). " +
-    "Se souber o nome do paciente, use {{nome}} como placeholder quando natural.";
+  "Você é 'Cristina', secretária virtual da Dra. Jenifer Bottino. " +
+  "⚠️ REGRAS IMPORTANTES ⚠️:\n" +
+  "1. Nunca se apresente novamente se a conversa já começou. " +
+  "   - Se houver histórico de mensagens anteriores, NÃO diga frases como 'Olá! Eu sou a Cristina...' ou 'Bem-vindo(a)'. " +
+  "   - Apenas responda direto ao ponto.\n" +
+  "2. Nunca execute ações (agendar, cancelar, remarcar). Apenas oriente o paciente a usar as palavras-chave certas.\n" +
+  "3. Se o paciente estiver no meio de um processo (aguardando confirmação, cancelando, remarcando), apenas ajude a concluir.\n" +
+  "4. Se houver dúvidas (preço, preparo, endereço), responda objetivamente e convide a voltar ao fluxo.\n" +
+  "5. Nunca repita listas de horários. O servidor faz isso.\n" +
+  "6. Sempre que possível, use {{nome}} se o nome do paciente estiver disponível.";
 
   // Histórico curto para dar noção de contexto à IA
   const history = Array.isArray(convSnap.messages)
     ? convSnap.messages.slice(-12)
     : [];
+// [NOVO] Marcador de que a conversa já está em andamento
+if (history.length > 0) {
+  history.unshift({
+    role: "system",
+    content:
+      "Observação: Esta conversa já está em andamento. Não se apresente novamente e não reinicie a conversa."
+  });
+}
 
   const aiMessages = [
     {
@@ -2016,6 +2054,44 @@ try {
   } catch (e) {
     console.error("[askCristina] erro:", e?.message || e);
   }
+// ======== DECISÃO DE ESTÁGIO COM BASE NO CONTEÚDO DA IA ========
+const convNow = ensureConversation(_from);
+
+// (1) Se a IA está pedindo confirmação, marque estado de espera de confirmação
+if (ASK_CONFIRM_RE.test(aiReply) || TRIGGER_CREATE_RE.test(aiReply)) {
+  // Não sobrescreva detalhes se já estavam preenchidos; apenas sinalize a espera
+  convNow.stage = "awaiting_confirmation";
+  convNow.greetedAt = Date.now();
+  // (opcional) se quiser, podemos tentar extrair dia/hora da frase cabalística:
+  const m = aiReply.match(TRIGGER_CREATE_RE);
+  if (m) {
+    convNow.pendingAppointment = convNow.pendingAppointment || {};
+    convNow.pendingAppointment.dateLabel = m[1]; // “DD/MM”
+    convNow.pendingAppointment.timeLabel = m[2]; // “HH:MM”
+  }
+}
+
+// (2) Se estamos em confirmação/cancelamento/remarcação,
+//     só permita a IA falar se for realmente pertinente a esses estágios.
+//     Caso contrário, silencie para não atrapalhar.
+if (
+  (convNow.stage === "awaiting_confirmation" || convNow.stage === "awaiting_cancel" || convNow.stage === "rescheduling")
+  &&
+  !(ASK_CONFIRM_RE.test(aiReply) || TRIGGER_CREATE_RE.test(aiReply))
+) {
+  // Silencia respostas que não ajudam nesses estágios
+  return;
+}
+
+// (3) Anti-duplicação: evita a IA repetir a MESMA frase em ~30s
+const fp = aiFingerprint(aiReply);
+const nowTs = Date.now();
+if (convNow.lastAiFp && convNow.lastAiAt && convNow.lastAiFp === fp && (nowTs - convNow.lastAiAt) < 30_000) {
+  // mesma resposta muito recente → não enviar de novo
+  return;
+}
+convNow.lastAiFp = fp;
+convNow.lastAiAt = nowTs;
 
   // Resposta padrão caso a IA não retorne nada útil
   if (!aiReply || aiReply.trim().length < 2) {
