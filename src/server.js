@@ -240,6 +240,63 @@ const MAX_CONTEXT_CHARS = Number(process.env.MAX_CONTEXT_CHARS || 20000);
 
 
 const conversations = new Map();
+// === Controle de Fallback/Resgate por IA (anti-loop e sem recomeçar conversa) ===
+const AI_RESCUE_COOLDOWN_MS = parseInt(process.env.AI_RESCUE_COOLDOWN_MS || "30000", 10); // 30s
+
+function canRescueByAI(conv) {
+  const last = conv?.aiRescue?.lastAt || 0;
+  return Date.now() - last > AI_RESCUE_COOLDOWN_MS;
+}
+
+function markRescue(conv, what = "ai_rescue") {
+  if (!conv.aiRescue) conv.aiRescue = {};
+  conv.aiRescue.lastAt = Date.now();
+  conv.aiRescue.lastTag = what;
+}
+
+function stripIntro(text) {
+  // remove apresentações do tipo "Olá! Sou a secretária..." / "Oi, eu sou a Cristina..."
+  if (!text) return text;
+  let t = String(text).trim();
+
+  // linhas iniciais “Olá/oi + apresentação”
+  const introRe = /^(ol[áa]|oi)[!,.]?[^]*?(sou|aqui (?:para|pra)|posso ajudar|secret[áa]ria|assistente)[^]*?\n+/i;
+  t = t.replace(introRe, "");
+
+  // evita repetição de saudações curtas
+  t = t.replace(/^(ol[áa]|oi)[!,.]?\s*/i, "");
+
+  // se sobrou vazio, devolve o original para não silenciar
+  return t.trim() || String(text);
+}
+
+async function aiRescueReply({ from, userText, conversation }) {
+  // Monta contexto enxuto (sem “reapresentação”)
+  const systemHint =
+    "Seja objetiva. Nao se reapresente. Continue de onde a conversa parou. " +
+    "Se o paciente trocar de ideia (agendar↔cancelar↔remarcar↔dúvida), reconheça e conduza ao próximo passo. " +
+    "Respeite que a frase cabalística de confirmação de AGENDAMENTO é responsabilidade da IA.";
+
+  const history = (conversation?.messages || []).map(m => ({
+    role: m.role === "assistant" ? "assistant" : "user",
+    content: m.content
+  }));
+
+  // Chama sua IA (mantém sua função atual)
+  const raw = await askCristina({
+    system: systemHint,
+    messages: [
+      ...history.slice(-8),               // contexto reduzido (anti-token)
+      { role: "user", content: userText } // última fala do paciente
+    ]
+  });
+
+  const text = stripIntro(raw?.text || raw || "");
+  if (text) {
+    appendMessage(from, "assistant", text);
+    await sendText({ to: from, text });
+  }
+}
 
 function nowMs() { return Date.now(); }
 
@@ -1500,7 +1557,10 @@ if (dow === 6 || dow === 0) {
         const msg =
   `Para **${ddmm}** não encontrei horários livres.\n` +
   `Posso te enviar alternativas próximas dessa data ou procurar outra data que você prefira.`;
-        appendMessage(from, "assistant", msg);
+        appendMessage(from, "assistant", msg); 
+        const convMark = ensureConversation(from); 
+        if (!convMark.aiRescue) convMark.aiRescue = {}; 
+        convMark.aiRescue.lastTag = "assistant_regular";
         await sendText({ to: from, text: msg });
       } else {
         const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`);
@@ -1509,6 +1569,9 @@ if (dow === 6 || dow === 0) {
           linhas.join("\n") +
           `\n\nResponda com **opção N** (ex.: "opção 3") ou digite **data e horário** (ex.: "24/09 14:00").`;
         appendMessage(from, "assistant", msg);
+        const convMark = ensureConversation(from);
+        if (!convMark.aiRescue) convMark.aiRescue = {};
+        convMark.aiRescue.lastTag = "assistant_regular";
         await sendText({ to: from, text: msg });
       }
       return; // não deixa cair em outros blocos; evita travar o fluxo
@@ -1577,6 +1640,9 @@ if (dayStart.getTime() < today0.getTime()) {
   `Para **${dd}/${mm}** não encontrei horários livres.\n` +
   `Posso te enviar alternativas próximas dessa data ou procurar outra data que você prefira.`;
           appendMessage(from, "assistant", msg);
+          const convMark = ensureConversation(from);
+          if (!convMark.aiRescue) convMark.aiRescue = {};
+          convMark.aiRescue.lastTag = "assistant_regular";
           await sendText({ to: from, text: msg });
         } else {
           const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`);
@@ -1585,6 +1651,9 @@ if (dayStart.getTime() < today0.getTime()) {
             linhas.join("\n") +
             `\n\nResponda com **opção N** (ex.: "opção 3") ou digite **data e horário** (ex.: "24/09 14:00").`;
           appendMessage(from, "assistant", msg);
+          const convMark = ensureConversation(from);
+          if (!convMark.aiRescue) convMark.aiRescue = {};
+          convMark.aiRescue.lastTag = "assistant_regular";
           await sendText({ to: from, text: msg });
         }
         return; // já respondemos com as opções do dia solicitado
@@ -1726,6 +1795,9 @@ if ((wantsNearest || wantsAvailability) && (getConversation(from)?.mode || null)
       convNow.updatedAt = Date.now();
 
       appendMessage(from, "assistant", msg);
+      const convMark = ensureConversation(from);
+      if (!convMark.aiRescue) convMark.aiRescue = {};
+      convMark.aiRescue.lastTag = "assistant_regular";
       await sendText({ to: from, text: msg });
     }
     return; // corta o fluxo aqui para não vir a mensagem genérica da IA
@@ -1937,6 +2009,29 @@ if (finalAnswer) {
   appendMessage(from, "assistant", finalAnswer);
   await sendText({ to: from, text: finalAnswer });
 }
+// === FALLBACK CONTROLADO PARA IA (último recurso; não reinicia conversa) ===
+try {
+  const conv = ensureConversation(from);
+
+  // 1) Não cair em fallback se algum bloco já respondeu neste turno.
+  //    Regras anteriores SEMPRE fazem 'return' ao responder. Se chegamos aqui, nada respondeu.
+
+  // 2) Anti-loop: respeita cooldown e evita repetir apresentação
+  if (!canRescueByAI(conv)) {
+    // Silencioso: não manda outra mensagem; aguarda próxima interação do paciente
+  } else {
+    markRescue(conv, "ai_rescue");
+
+    // Guarda a fala do usuário no histórico antes do resgate
+    appendMessage(from, "user", userText);
+
+    // Chama a IA pedindo “continuação” (sem reintrodução)
+    await aiRescueReply({ from, userText, conversation: conv });
+  }
+} catch (e) {
+  console.error("[fallback-ai] erro:", e?.message || e);
+}
+// === FIM DO FALLBACK ===
 
 // <-- fecha o try global do handleInbound
 } catch (err) {
