@@ -981,28 +981,22 @@ await sendText({
   text: "Só para confirmar: deseja mesmo **cancelar** esse horário? Responda **sim** ou **não**."
 });
 
-// === [ADICIONADO] Fallback IA durante a confirmação ===
-// Se o paciente não respondeu sim/não, peça para a IA orientar sem sair do fluxo.
-// Use contador para não acionar a IA logo na 1ª tentativa.
-ctx._confirmNudges = (ctx._confirmNudges || 0) + 1;
-if (ctx._confirmNudges >= 2) {
-  try {
-    const answer = await askCristina({
-      userText,                // mensagem atual do paciente
-      userPhone: String(from), // telefone do paciente
-      // (Opcional) a sua askCristina já usa o histórico montado fora;
-      // aqui passamos um hint de sistema embutido no texto
-      systemHint:
-        "Você está na ETAPA DE CONFIRMAÇÃO DE CANCELAMENTO. " +
-        "Se o paciente não responder claramente SIM ou NÃO, explique as opções (manter, cancelar, remarcar), " +
-        "pergunte com suavidade e, se houver intenção de mudar de fluxo, redirecione sem reiniciar a conversa."
-    });
-    if (answer) await sendText({ to: from, text: answer });
-  } catch (e) {
-    console.error("[fallback-IA-confirm-cancel] erro:", e?.message || e);
-  }
+// === Fallback IA imediato nesta etapa de CONFIRMAÇÃO ===
+try {
+  const answer = await askCristina({
+    userText,
+    userPhone: String(from),
+    systemHint:
+      "Você está na ETAPA DE CONFIRMAÇÃO DE CANCELAMENTO. " +
+      "Se o paciente não responder claramente SIM ou NÃO, explique as opções (manter, cancelar, remarcar), " +
+      "tire dúvidas e, se quiser mudar de fluxo, redirecione sem reiniciar."
+  });
+  if (answer) await sendText({ to: from, text: answer });
+} catch (e) {
+  console.error("[fallback-IA-confirm-cancel] erro:", e?.message || e);
 }
 return;
+
   }
 }
 
@@ -1015,8 +1009,41 @@ if (pickM && Array.isArray(convMem.cancelCtx?.matchList) && convMem.cancelCtx.ma
     ctx.chosenEvent = chosen;
   } else {
     await sendText({ to: from, text: "Número inválido. Responda com 1, 2, 3 conforme a lista." });
-    return;
+
+// === Fallback IA imediato na ETAPA DE ESCOLHA DE EVENTO (lista) ===
+try {
+  const answer = await askCristina({
+    userText,
+    userPhone: String(from),
+    systemHint:
+      "Você está na ETAPA DE ESCOLHA DE UM EVENTO LISTADO PARA CANCELAMENTO/REAGENDAMENTO. " +
+      "Ajude a pessoa a escolher **1/2/3**, esclareça dúvidas sobre qual é o agendamento correto " +
+      "e ofereça alternativa (ex.: pedir mais informações) sem reiniciar o fluxo."
+  });
+  if (answer) await sendText({ to: from, text: answer });
+} catch (e) {
+  console.error("[fallback-IA-pick-cancel] erro:", e?.message || e);
+}
+return;
+
   }
+}
+// === Se há lista na memória e AINDA não escolheu nada, mas também não veio "1/2/3":
+if (!ctx.chosenEvent && Array.isArray(convMem.cancelCtx?.matchList) && convMem.cancelCtx.matchList.length) {
+  try {
+    const answer = await askCristina({
+      userText,
+      userPhone: String(from),
+      systemHint:
+        "Você está na ETAPA DE ESCOLHA DE UM EVENTO LISTADO. " +
+        "Reforce que a pessoa pode responder **1, 2 ou 3** conforme a lista, " +
+        "tire dúvidas e ofereça ajuda para identificar qual é o agendamento correto."
+    });
+    if (answer) await sendText({ to: from, text: answer });
+  } catch (e) {
+    console.error("[fallback-IA-pending-pick-cancel] erro:", e?.message || e);
+  }
+  // não fazemos return; deixamos seguir (pode haver extração de telefone/nome/data)
 }
 
     // 1) Tentar extrair telefone e nome do texto livre (último dado prevalece)
@@ -1066,7 +1093,7 @@ if (candidateName) {
 
     // 3) GATE: só seguimos se tiver TELEFONE ou NOME; data/hora sozinha não basta
 if (!ctx.phone && !ctx.name) {
-  // 3.1) Sua mensagem original (mantida)
+  // Sua mensagem original (mantida)
   await sendText({
     to: from,
     text:
@@ -1074,33 +1101,24 @@ if (!ctx.phone && !ctx.name) {
       "Se souber, **data e horário** também me ajudam (ex.: 26/09 09:00)."
   });
 
-  // 3.2) [ADICIONADO] Fallback IA quando a resposta não bate com a etapa
-  ctx._idNudges = (ctx._idNudges || 0) + 1;
-  if (ctx._idNudges >= 2) {
-    try {
-      // Sinais de que a pessoa mudou de intenção ou está com dúvida
-      const looksQuestion = /\?\s*$/.test(String(userText || ""));
-      const intentChange =
-        /\b(agend|remarc|reagend|cancel(ar|amento)|du[íi]vida|encerrar|obrigad[ao]|tchau)\b/i.test(String(userText || ""));
-
-      if (looksQuestion || intentChange) {
-        const answer = await askCristina({
-          userText,
-          userPhone: String(from),
-          systemHint:
-            "Você está na ETAPA DE COLETA DE IDENTIDADE PARA CANCELAMENTO/REAGENDAMENTO. " +
-            "Ajude a paciente a voltar à etapa (pedindo telefone/nome de forma acolhedora), " +
-            "ou, caso queira outra coisa (ex.: agendar, tirar dúvida, encerrar), " +
-            "redirecione para o fluxo correto SEM reiniciar."
-        });
-        if (answer) await sendText({ to: from, text: answer });
-      }
-    } catch (e) {
-      console.error("[fallback-IA-id-cancel] erro:", e?.message || e);
-    }
+  // === Fallback IA imediato nesta etapa de IDENTIDADE ===
+  try {
+    const answer = await askCristina({
+      userText,
+      userPhone: String(from),
+      systemHint:
+        "Você está na ETAPA DE COLETA DE IDENTIDADE PARA CANCELAMENTO/REAGENDAMENTO. " +
+        "Peça telefone/nome com acolhimento e, se a intenção mudar (agendar, tirar dúvida, encerrar), " +
+        "redirecione para o fluxo correto sem reiniciar."
+    });
+    if (answer) await sendText({ to: from, text: answer });
+  } catch (e) {
+    console.error("[fallback-IA-id-cancel] erro:", e?.message || e);
   }
 
   return;
+}
+
 }
 
 
@@ -1164,23 +1182,36 @@ try {
 }
 
 
-    // 5) Se nada encontrado, peça o que falta (sem travar)
-    if (!matches.length) {
-      const faltantes = [];
-      if (!ctx.phone) faltantes.push("Telefone");
-      if (!ctx.name)  faltantes.push("Nome");
-      const pedacos =
-        faltantes.length
-          ? `Tente me enviar ${faltantes.join(" e ")} (pode ser só um deles)`
-          : "Se puder, me confirme a **data** (ex.: 26/09) e o **horário** (ex.: 09:00) do agendamento";
-      await sendText({
-        to: from,
-        text:
-          "Não encontrei seu agendamento com as informações atuais.\n" +
-          pedacos + " para eu localizar certinho."
-      });
-      return;
-    }
+    // 5) Se nada encontrado, peça o que falta e acione IA (sem travar)
+if (!matches.length) {
+  const faltantes = [];
+  if (!ctx.phone) faltantes.push("Telefone");
+  if (!ctx.name)  faltantes.push("Nome");
+  const pedacos =
+    faltantes.length
+      ? `Tente me enviar ${faltantes.join(" e ")} (pode ser só um deles)`
+      : "Se puder, me confirme a **data** (ex.: 26/09) e o **horário** (ex.: 09:00) do agendamento";
+
+  await sendText({
+    to: from,
+    text: "Não encontrei seu agendamento com as informações atuais.\n" + pedacos + " para eu localizar certinho."
+  });
+
+  // === Fallback IA imediato nesta situação de ZERO RESULTADOS ===
+  try {
+    const answer = await askCristina({
+      userText,
+      userPhone: String(from),
+      systemHint:
+        "Nenhum agendamento foi encontrado. Ajude a coletar os dados faltantes (telefone/nome) " +
+        "ou investigue se a pessoa quer outro fluxo (agendar, tirar dúvida, encerrar)."
+    });
+    if (answer) await sendText({ to: from, text: answer });
+  } catch (e) {
+    console.error("[fallback-IA-no-matches-cancel] erro:", e?.message || e);
+  }
+  return;
+}
 
     // 6) Se múltiplos, lista para escolha
     if (matches.length > 1 && !ctx.chosenEvent) {
@@ -1200,6 +1231,20 @@ try {
     if (!ctx.chosenEvent && matches.length === 1) {
       ctx.chosenEvent = matches[0];
     }
+// ainda não escolheu corretamente → IA ajuda a escolher
+try {
+  const answer = await askCristina({
+    userText,
+    userPhone: String(from),
+    systemHint:
+      "Você está NA ETAPA DE LISTA DE POSSÍVEIS AGENDAMENTOS. " +
+      "Instrua a escolher **1/2/3** conforme a lista, permita tirar dúvidas e ajude a identificar o evento correto."
+  });
+  if (answer) await sendText({ to: from, text: answer });
+} catch (e) {
+  console.error("[fallback-IA-no-chosen-cancel] erro:", e?.message || e);
+}
+return;
 
     if (!ctx.chosenEvent) {
       // ainda não escolheu corretamente
