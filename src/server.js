@@ -1026,8 +1026,7 @@ try {
 }
 return;
 
-  }
-}
+
 // === Se há lista na memória e AINDA não escolheu nada, mas também não veio "1/2/3":
 if (!ctx.chosenEvent && Array.isArray(convMem.cancelCtx?.matchList) && convMem.cancelCtx.matchList.length) {
   try {
