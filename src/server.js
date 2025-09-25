@@ -2070,7 +2070,7 @@ try {
   }
 } catch {}
 
-
+}
 // <-- fecha o try global do handleInbound
 } catch (err) {
   console.error("ERR inbound:", err?.response?.data || err);
