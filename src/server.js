@@ -976,11 +976,33 @@ if (ctx.awaitingConfirm) {
     return;
   } else {
     // não entendi; reapresenta o pedido, sem travar
-    await sendText({
-      to: from,
-      text: "Só para confirmar: deseja mesmo **cancelar** esse horário? Responda **sim** ou **não**."
+await sendText({
+  to: from,
+  text: "Só para confirmar: deseja mesmo **cancelar** esse horário? Responda **sim** ou **não**."
+});
+
+// === [ADICIONADO] Fallback IA durante a confirmação ===
+// Se o paciente não respondeu sim/não, peça para a IA orientar sem sair do fluxo.
+// Use contador para não acionar a IA logo na 1ª tentativa.
+ctx._confirmNudges = (ctx._confirmNudges || 0) + 1;
+if (ctx._confirmNudges >= 2) {
+  try {
+    const answer = await askCristina({
+      userText,                // mensagem atual do paciente
+      userPhone: String(from), // telefone do paciente
+      // (Opcional) a sua askCristina já usa o histórico montado fora;
+      // aqui passamos um hint de sistema embutido no texto
+      systemHint:
+        "Você está na ETAPA DE CONFIRMAÇÃO DE CANCELAMENTO. " +
+        "Se o paciente não responder claramente SIM ou NÃO, explique as opções (manter, cancelar, remarcar), " +
+        "pergunte com suavidade e, se houver intenção de mudar de fluxo, redirecione sem reiniciar a conversa."
     });
-    return;
+    if (answer) await sendText({ to: from, text: answer });
+  } catch (e) {
+    console.error("[fallback-IA-confirm-cancel] erro:", e?.message || e);
+  }
+}
+return;
   }
 }
 
@@ -1044,15 +1066,43 @@ if (candidateName) {
 
     // 3) GATE: só seguimos se tiver TELEFONE ou NOME; data/hora sozinha não basta
 if (!ctx.phone && !ctx.name) {
-  // o paciente mandou apenas data/hora ou nada útil → peça identidade
+  // 3.1) Sua mensagem original (mantida)
   await sendText({
     to: from,
     text:
       "Para localizar com segurança, me envie **Telefone** (DDD + número) **e/ou** **Nome completo**.\n" +
       "Se souber, **data e horário** também me ajudam (ex.: 26/09 09:00)."
   });
+
+  // 3.2) [ADICIONADO] Fallback IA quando a resposta não bate com a etapa
+  ctx._idNudges = (ctx._idNudges || 0) + 1;
+  if (ctx._idNudges >= 2) {
+    try {
+      // Sinais de que a pessoa mudou de intenção ou está com dúvida
+      const looksQuestion = /\?\s*$/.test(String(userText || ""));
+      const intentChange =
+        /\b(agend|remarc|reagend|cancel(ar|amento)|du[íi]vida|encerrar|obrigad[ao]|tchau)\b/i.test(String(userText || ""));
+
+      if (looksQuestion || intentChange) {
+        const answer = await askCristina({
+          userText,
+          userPhone: String(from),
+          systemHint:
+            "Você está na ETAPA DE COLETA DE IDENTIDADE PARA CANCELAMENTO/REAGENDAMENTO. " +
+            "Ajude a paciente a voltar à etapa (pedindo telefone/nome de forma acolhedora), " +
+            "ou, caso queira outra coisa (ex.: agendar, tirar dúvida, encerrar), " +
+            "redirecione para o fluxo correto SEM reiniciar."
+        });
+        if (answer) await sendText({ to: from, text: answer });
+      }
+    } catch (e) {
+      console.error("[fallback-IA-id-cancel] erro:", e?.message || e);
+    }
+  }
+
   return;
 }
+
 
     // 4) Buscar eventos: identidade (Telefone e/ou Nome) é obrigatória; Data/Hora são filtros adicionais
 if (!ctx.phone && !ctx.name) {
