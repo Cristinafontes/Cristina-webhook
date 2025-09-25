@@ -1654,35 +1654,59 @@ try {
 } catch {}
 
     // Montagem de contexto para a IA
-    const conv = getConversation(from);
-    let composed;
+const conv = getConversation(from);
+let composed;
 
-    if (conv && conv.messages.length > 0) {
-      const lines = conv.messages.map(m =>
-        m.role === "user" ? `Paciente: ${m.content}` : `Cristina: ${m.content}`
-      );
-      lines.push(`Paciente: ${userText}`);
+// --- Hints invisíveis pra IA (não exibidos pro paciente) ---
+const nowMs = Date.now();
+const greetedAt = conv?.greetedAt || 0;
+const justGreetedRecently = (nowMs - greetedAt) < 30 * 60 * 1000; // 30 min sem se reapresentar
 
-      let body = lines.join("\n");
-      if (body.length > MAX_CONTEXT_CHARS) {
-        const rev = lines.slice().reverse();
-        const kept = [];
-        let total = 0;
-        for (const line of rev) {
-          total += line.length + 1;
-          if (total > MAX_CONTEXT_CHARS) break;
-          kept.push(line);
-        }
-        body = kept.reverse().join("\n");
-      }
+const lastBookedAt = conv?.lastBookedAt || 0;
+const justBookedRecently = (nowMs - lastBookedAt) < 2 * 60 * 1000; // 2 min sem pedir confirmação de novo
 
-      composed =
-        `Contexto de conversa (mais recente por último):\n` +
-        `${body}\n\n` +
-        `Responda de forma consistente com o histórico, mantendo o tom e as regras da clínica.`;
-    } else {
-      composed = userText;
+let systemHints = [];
+if (justGreetedRecently) {
+  systemHints.push("NÃO se reapresente. Continue a conversa de onde parou.");
+}
+if (justBookedRecently) {
+  systemHints.push("O agendamento JÁ FOI confirmado no sistema. NÃO peça confirmação novamente; ofereça orientações pré-consulta ou ajuda extra.");
+}
+// Sempre que o paciente mudar de ideia (ex.: estava cancelando e quer remarcar), a IA deve acolher e redirecionar gentilmente SEM reiniciar a conversa.
+systemHints.push("Se o paciente mudar de intenção (agendar ↔ cancelar ↔ remarcar ↔ tirar dúvida), acolha e redirecione para o fluxo correto, sem reiniciar e sem repetir apresentação.");
+
+const hintsBlock = systemHints.length
+  ? `\n\n[HINTS (NÃO MOSTRAR AO PACIENTE): ${systemHints.join(" ")}]`
+  : "";
+
+if (conv && conv.messages.length > 0) {
+  const lines = conv.messages.map(m =>
+    m.role === "user" ? `Paciente: ${m.content}` : `Cristina: ${m.content}`
+  );
+  lines.push(`Paciente: ${userText}`);
+
+  let body = lines.join("\n");
+  if (body.length > MAX_CONTEXT_CHARS) {
+    const rev = lines.slice().reverse();
+    const kept = [];
+    let total = 0;
+    for (const line of rev) {
+      total += line.length + 1;
+      if (total > MAX_CONTEXT_CHARS) break;
+      kept.push(line);
     }
+    body = kept.reverse().join("\n");
+  }
+
+  composed =
+    `Contexto de conversa (mais recente por último):\n` +
+    `${body}\n\n` +
+    `Responda de forma consistente com o histórico, mantendo o tom e as regras da clínica.` +
+    hintsBlock; // <--- anexa os hints invisíveis
+} else {
+  composed = (userText || "") + hintsBlock; // conversa nova com hints
+}
+
 // === INTENÇÃO: "mais próximo" / "quando tem disponível"  =====================
 {
   const t = (userText || "")
@@ -1909,6 +1933,12 @@ await createCalendarEvent({
     }
   }
 });
+            // Marca que acabamos de agendar (anti re-confirmação pela IA nos próximos minutos)
+try {
+  const c = ensureConversation(from);
+  c.lastBookedAt = Date.now();
+} catch {}
+
 
           } else {
             console.warn("Confirmação detectada, mas não consegui interpretar data/hora:", textForParser);
@@ -1936,6 +1966,16 @@ if (finalAnswer) {
 
   appendMessage(from, "assistant", finalAnswer);
   await sendText({ to: from, text: finalAnswer });
+  // Marca que a Cristina já se apresentou (anti-reapresentação)
+// Detecta frases típicas de apresentação; ajuste se quiser mais padrões.
+try {
+  const introRegex = /\b(Secret[aá]ria\s+Cristina|sou\s+a\s+Cristina|me\s+chamo\s+Cristina)\b/i;
+  if (finalAnswer && introRegex.test(finalAnswer)) {
+    const c = ensureConversation(from);
+    if (!c.greetedAt) c.greetedAt = Date.now();
+  }
+} catch {}
+
 }
 
 // <-- fecha o try global do handleInbound
