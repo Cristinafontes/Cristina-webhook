@@ -949,286 +949,312 @@ function eventMatchesIdentity(ev, { phone, name }) {
 // === MODO CANCELAMENTO: coletar dados (telefone/nome/data) e cancelar com base em 1+ campos ===
 {
   const convMem = getConversation(from);
-  if (convMem?.mode === "cancel") {
+  if (convMem?.mode === "cancel") {  
     const ctx = convMem.cancelCtx || (convMem.cancelCtx = { phone: "", name: "", dateISO: null, timeHHMM: null, chosenEvent: null });
-    // Se estamos aguardando confirmação do cancelamento:
-if (ctx.awaitingConfirm) {
-  const yes = /\b(sim|pode|confirmo|confirmar|ok|isso|pode cancelar)\b/i.test(userText || "");
-  const no  = /\b(n[aã]o|negativo|melhor n[aã]o|cancelar n[aã]o)\b/i.test(userText || "");
 
-  if (yes && ctx.chosenEvent) {
-  // confirmou: destrava confirmação e marca flag permanente
-  ctx.awaitingConfirm = false;
-  ctx.confirmed = true;
-  convMem.updatedAt = Date.now();
-  // segue o fluxo adiante até o bloco "Cancelar no Google"
-} else if (no) {
-    // não quer mais cancelar → volta para IA ajudar
-    ctx.awaitingConfirm = false;
-    convMem.mode = null;
-    convMem.after = null;
+    // --- NOVO: Guard para dúvidas/perguntas durante o cancelamento/reagendamento ---
+    // Se a mensagem for uma PERGUNTA ou DÚVIDA informativa e NÃO estamos aguardando confirmação,
+    // não processe o cancelamento neste turno: deixe a IA responder no fallback do final do handler.
+    try {
+      const _t = String(userText || "");
+      const isInfoQuestion =
+        /\?/.test(_t) ||
+        /\b(ortopedista|especialidade|conv[eê]nio|reembolso|valor|pre[çc]o|endere[cç]o|endereço|telemedicina|presencial|como\s+funciona|dura[cç][aã]o|tempo|onde\s+fica|plano)\b/i
+          .test(_t);
 
-    await sendText({
-      to: from,
-      text:
-        "Sem problema! Posso **manter** seu agendamento, **tirar dúvidas** sobre a consulta, ou, se preferir, posso **remarcar** para outro dia/horário. Como posso te ajudar agora?"
-    });
-    return;
-  } else {
-    // não entendi; reapresenta o pedido, sem travar
-    await sendText({
-      to: from,
-      text: "Só para confirmar: deseja mesmo **cancelar** esse horário? Responda **sim** ou **não**."
-    });
-    return;
-  }
-}
-
-// Se paciente respondeu "1", "2", etc. e já existe lista salva → processa aqui
-const pickM = (userText || "").match(/^\s*(\d{1,2})\s*$/);
-if (pickM && Array.isArray(convMem.cancelCtx?.matchList) && convMem.cancelCtx.matchList.length) {
-  const idx = Number(pickM[1]) - 1;
-  const chosen = convMem.cancelCtx.matchList[idx];
-  if (chosen) {
-    ctx.chosenEvent = chosen;
-  } else {
-    await sendText({ to: from, text: "Número inválido. Responda com 1, 2, 3 conforme a lista." });
-    return;
-  }
-}
-
-    // 1) Tentar extrair telefone e nome do texto livre (último dado prevalece)
-// telefone
-const maybePhone = extractPhoneFromText(userText);
-if (maybePhone) {
-  ctx.phone = normalizePhoneForLookup(maybePhone);
-
-  // *** reset defensivo ao trocar telefone ***
-  ctx.dateISO = null;
-  ctx.timeHHMM = null;
-  ctx.chosenEvent = null;
-  ctx.matchList = [];
-  ctx.awaitingConfirm = false;
-  ctx.confirmed = false;
-}
-
-// nome (reaproveita seu extrator robusto)
-const candidateNameRaw = extractNameFromText?.(userText);
-const candidateName = (candidateNameRaw || "").trim();
-if (candidateName) {
-  ctx.name = candidateName;
-
-  // *** reset defensivo ao trocar nome ***
-  ctx.dateISO = null;
-  ctx.timeHHMM = null;
-  ctx.chosenEvent = null;
-  ctx.matchList = [];
-  ctx.awaitingConfirm = false;
-  ctx.confirmed = false;
-}
-
-    // 2) Tentar extrair data/hora (aceita "26/09", "26/09 09:00", "26-09 9h")
-    const mDate = userText.match(/(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?/);
-    const mTime = userText.match(/\b(\d{1,2})(?::|h)(\d{2})\b/);
-    if (mDate) {
-      const dd = String(mDate[1]).padStart(2, "0");
-      const mm = String(mDate[2]).padStart(2, "0");
-      const yyyyFull = mDate[3] ? (String(mDate[3]).length === 2 ? 2000 + Number(mDate[3]) : Number(mDate[3])) : new Date().getFullYear();
-      ctx.dateISO = `${yyyyFull}-${mm}-${dd}T00:00:00`;
-    }
-    if (mTime) {
-      const hh = String(mTime[1]).padStart(2, "0");
-      const mi = String(mTime[2]).padStart(2, "0");
-      ctx.timeHHMM = `${hh}:${mi}`;
-    }
-
-    // 3) GATE: só seguimos se tiver TELEFONE ou NOME; data/hora sozinha não basta
-if (!ctx.phone && !ctx.name) {
-  // o paciente mandou apenas data/hora ou nada útil → peça identidade
-  await sendText({
-    to: from,
-    text:
-      "Para localizar com segurança, me envie **Telefone** (DDD + número) **e/ou** **Nome completo**.\n" +
-      "Se souber, **data e horário** também me ajudam (ex.: 26/09 09:00)."
-  });
-  return;
-}
-
-    // 4) Buscar eventos: identidade (Telefone e/ou Nome) é obrigatória; Data/Hora são filtros adicionais
-if (!ctx.phone && !ctx.name) {
-  await sendText({
-    to: from,
-    text:
-      "Preciso de **Telefone** (DDD + número) **e/ou** **Nome completo** para localizar seu agendamento.\n" +
-      "Se tiver, **data** e **horário** ajudam como filtros (ex.: 26/09 09:00)."
-  });
-  return;
-}
-
-let matches = [];
-try {
-  const phoneForLookup = ctx.phone || (normalizePhoneForLookup(conversations.get(from)?.lastKnownPhone) || "");
-  const nameForLookup  = ctx.name  || "";
-
-  // 4.1) Busca ampla por paciente no período
-  const rawEvents = await findPatientEvents({
-    phone: phoneForLookup,   // mesmo que a função ignore, vamos refinar localmente
-    name:  nameForLookup,
-    daysBack: 180,
-    daysAhead: 365
-  });
-
-  // 4.2) Filtra PRIMEIRO pela identidade (telefone/nome)
-  const idFilter = { phone: phoneForLookup, name: nameForLookup };
-  let filtered = rawEvents.filter(ev => eventMatchesIdentity(ev, idFilter));
-
-  // 4.3) Se veio data/hora, aplicar como filtros ADICIONAIS
-  if (ctx.dateISO) {
-    const dayStart = new Date(ctx.dateISO);
-    const dayEnd   = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
-
-    filtered = filtered.filter(ev => {
-      const dt = ev.startISO ? new Date(ev.startISO) : null;
-      if (!dt) return false;
-      if (dt < dayStart || dt >= dayEnd) return false;
-
-      if (ctx.timeHHMM) {
-        const hh = String(dt.getHours()).padStart(2, "0");
-        const mi = String(dt.getMinutes()).padStart(2, "0");
-        const hhmm = `${hh}:${mi}`;
-        // tolerância de 15 min
-        if (hhmm !== ctx.timeHHMM) {
-          const target = new Date(`${dayStart.toISOString().slice(0,10)}T${ctx.timeHHMM}:00`);
-          const diff = Math.abs(dt.getTime() - target.getTime());
-          if (diff > 15 * 60 * 1000) return false;
-        }
-      }
-      return true;
-    });
-  }
-
-  matches = filtered;
-} catch (e) {
-  console.error("[cancel-lookup] erro:", e?.message || e);
-  matches = [];
-}
-
-
-    // 5) Se nada encontrado, peça o que falta (sem travar)
-    if (!matches.length) {
-      const faltantes = [];
-      if (!ctx.phone) faltantes.push("Telefone");
-      if (!ctx.name)  faltantes.push("Nome");
-      const pedacos =
-        faltantes.length
-          ? `Tente me enviar ${faltantes.join(" e ")} (pode ser só um deles)`
-          : "Se puder, me confirme a **data** (ex.: 26/09) e o **horário** (ex.: 09:00) do agendamento";
-      await sendText({
-        to: from,
-        text:
-          "Não encontrei seu agendamento com as informações atuais.\n" +
-          pedacos + " para eu localizar certinho."
-      });
-      return;
-    }
-
-    // 6) Se múltiplos, lista para escolha
-    if (matches.length > 1 && !ctx.chosenEvent) {
-      const linhas = matches.map((ev, i) => `${i + 1}) ${ev.dayLabel} ${ev.timeLabel} — ${ev.summary || "Consulta"}`);
-      await sendText({
-        to: from,
-        text:
-          "Encontrei mais de um agendamento. Escolha **1**, **2**, **3**...\n" +
-          linhas.join("\n")
-      });
-      convMem.cancelCtx.matchList = matches;
-      convMem.updatedAt = Date.now();
-      return;
-    }
-
-    // 7) Se ainda não fixou um evento (mas só há 1), pega o único
-    if (!ctx.chosenEvent && matches.length === 1) {
-      ctx.chosenEvent = matches[0];
-    }
-
-    if (!ctx.chosenEvent) {
-      // ainda não escolheu corretamente
-      return;
-    }
-// 8) Confirma ANTES de cancelar (novo passo)
-if (ctx.chosenEvent && !ctx.awaitingConfirm && !ctx.confirmed) {
-  const who = (ctx.name && ctx.name !== "Paciente (WhatsApp)") ? `, ${ctx.name}` : "";
-  const dd = ctx.chosenEvent.dayLabel;
-  const hhmm = ctx.chosenEvent.timeLabel;
-
-  await sendText({
-    to: from,
-    text:
-      `Pronto${who}, encontrei sua consulta em **${dd}**, às **${hhmm}**.\n` +
-      `Posso proceder com o cancelamento? Responda sim ou não.`
-  });
-
-  // marca que estamos aguardando confirmação
-  ctx.awaitingConfirm = true;
-  convMem.updatedAt = Date.now();
-  return;
-}
-
-    // 8) Cancelar no Google (executa somente após confirmação "sim")
-if (!ctx.confirmed) {
-  // ainda não confirmou; não executa cancelamento
-  return;
-}
-try {
-  await cancelCalendarEvent({ eventId: ctx.chosenEvent.id });
-} catch (e) {
-
-  console.error("[cancel-google] erro:", e?.message || e);
-  await sendText({
-    to: from,
-    text: "Tive um erro ao cancelar no calendário. Pode me enviar novamente as informações ou digitar 'reset' para recomeçar?"
-  });
-  return;
-}
-
-    // Mensagem padrão compatível com seu fluxo antigo (mantida)
-    const dd = ctx.chosenEvent.dayLabel;
-    const hhmm = ctx.chosenEvent.timeLabel;
-    const yy = new Date(ctx.chosenEvent.startISO).getFullYear().toString().slice(-2);
-    const cancelText = `Pronto! Sua consulta com a Dra. Jenifer está cancelada para o dia ${dd}/${yy} ${hhmm}.`;
-
-    await sendText({ to: from, text: cancelText });
-
-    // 9) Se era remarcar, oferecer horários (com "opção N")
-    const shouldReschedule = convMem.after === "schedule";
-    convMem.mode = null;
-    convMem.after = null;
-
-    if (shouldReschedule) {
-      const slots = await listAvailableSlots({
-        fromISO: new Date().toISOString(),
-        days: 14,
-        limit: SLOTS_PAGE_SIZE
-      });
-
-      let msg;
-      if (!slots.length) {
-        msg = "Cancelamento concluído. Vamos remarcar? Não encontrei horários nos próximos dias. " +
-              "Se preferir, me diga uma **data específica** (ex.: 24/09).";
+      if (isInfoQuestion && !ctx.awaitingConfirm && !ctx.confirmed) {
+        // Evita menus/listagens automáticas em outros trechos neste turno
+        try { ensureConversation(from).justPickedOption = true; } catch {}
+        // IMPORTANTE: não retornar aqui — sair do bloco 'cancel' sem processar,
+        // assim o fluxo segue e cairá no fallback da IA ao final do handler.
       } else {
-        const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`).join("\n");
-        msg = msg = "Cancelamento concluído, {{nome}}. Vamos remarcar agora. Seguem as opções:\n" + 
-          linhas +
+        // ======================================================================
+        // ====== DAQUI PARA BAIXO É SEU CÓDIGO ORIGINAL (INALTERADO) ===========
+        // ======================================================================
+
+        // Se estamos aguardando confirmação do cancelamento:
+        if (ctx.awaitingConfirm) {
+          const yes = /\b(sim|pode|confirmo|confirmar|ok|isso|pode cancelar)\b/i.test(userText || "");
+          const no  = /\b(n[aã]o|negativo|melhor n[aã]o|cancelar n[aã]o)\b/i.test(userText || "");
+
+          if (yes && ctx.chosenEvent) {
+            // confirmou: destrava confirmação e marca flag permanente
+            ctx.awaitingConfirm = false;      
+            ctx.confirmed = true;
+            convMem.updatedAt = Date.now();
+            // segue o fluxo adiante até o bloco "Cancelar no Google"
+          } else if (no) {
+            // não quer mais cancelar → volta para IA ajudar
+            ctx.awaitingConfirm = false;
+            convMem.mode = null;
+            convMem.after = null;
+
+            await sendText({
+              to: from,
+              text:
+                "Sem problema! Posso **manter** seu agendamento, **tirar dúvidas** sobre a consulta, ou, se preferir, posso **remarcar** para outro dia/horário. Como posso te ajudar agora?"
+            });
+            return;
+          } else {
+            // não entendi; reapresenta o pedido, sem travar
+            await sendText({
+              to: from,
+              text: "Só para confirmar: deseja mesmo **cancelar** esse horário? Responda **sim** ou **não**."
+            });
+            return;
+          }
+        }
+
+        // Se paciente respondeu "1", "2", etc. e já existe lista salva → processa aqui
+        const pickM = (userText || "").match(/^\s*(\d{1,2})\s*$/);
+        if (pickM && Array.isArray(convMem.cancelCtx?.matchList) && convMem.cancelCtx.matchList.length) {
+          const idx = Number(pickM[1]) - 1;
+          const chosen = convMem.cancelCtx.matchList[idx];
+          if (chosen) {
+            ctx.chosenEvent = chosen;
+          } else {
+            await sendText({ to: from, text: "Número inválido. Responda com 1, 2, 3 conforme a lista." });
+            return;
+          }
+        }
+
+        // 1) Tentar extrair telefone e nome do texto livre (último dado prevalece)
+        // telefone
+        const maybePhone = extractPhoneFromText(userText);
+        if (maybePhone) {
+          ctx.phone = normalizePhoneForLookup(maybePhone);
+
+          // *** reset defensivo ao trocar telefone ***
+          ctx.dateISO = null;
+          ctx.timeHHMM = null;
+          ctx.chosenEvent = null;
+          ctx.matchList = [];
+          ctx.awaitingConfirm = false;
+          ctx.confirmed = false;
+        }
+
+        // nome (reaproveita seu extrator robusto)
+        const candidateNameRaw = extractNameFromText?.(userText);
+        const candidateName = (candidateNameRaw || "").trim();
+        if (candidateName) {
+          ctx.name = candidateName;
+
+          // *** reset defensivo ao trocar nome ***
+          ctx.dateISO = null;
+          ctx.timeHHMM = null;
+          ctx.chosenEvent = null;
+          ctx.matchList = [];
+          ctx.awaitingConfirm = false;
+          ctx.confirmed = false;
+        }
+
+        // 2) Tentar extrair data/hora (aceita "26/09", "26/09 09:00", "26-09 9h")
+        const mDate = userText.match(/(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?/);
+        const mTime = userText.match(/\b(\d{1,2})(?::|h)(\d{2})\b/);
+        if (mDate) {
+          const dd = String(mDate[1]).padStart(2, "0");
+          const mm = String(mDate[2]).padStart(2, "0");
+          const yyyyFull = mDate[3] ? (String(mDate[3]).length === 2 ? 2000 + Number(mDate[3]) : Number(mDate[3])) : new Date().getFullYear();
+          ctx.dateISO = `${yyyyFull}-${mm}-${dd}T00:00:00`;
+        }
+        if (mTime) {
+          const hh = String(mTime[1]).padStart(2, "0");
+          const mi = String(mTime[2]).padStart(2, "0");
+          ctx.timeHHMM = `${hh}:${mi}`;
+        }
+
+        // 3) GATE: só seguimos se tiver TELEFONE ou NOME; data/hora sozinha não basta
+        if (!ctx.phone && !ctx.name) {
+          // o paciente mandou apenas data/hora ou nada útil → peça identidade
+          await sendText({
+            to: from,
+            text:
+              "Para localizar com segurança, me envie **Telefone** (DDD + número) **e/ou** **Nome completo**.\n" +
+              "Se souber, **data e horário** também me ajudam (ex.: 26/09 09:00)."
+          });
+          return;
+        }
+
+        // 4) Buscar eventos: identidade (Telefone e/ou Nome) é obrigatória; Data/Hora são filtros adicionais
+        if (!ctx.phone && !ctx.name) {
+          await sendText({
+            to: from,
+            text:
+              "Preciso de **Telefone** (DDD + número) **e/ou** **Nome completo** para localizar seu agendamento.\n" +
+              "Se tiver, **data** e **horário** ajudam como filtros (ex.: 26/09 09:00)."
+          });
+          return;
+        }
+
+        let matches = [];
+        try {
+          const phoneForLookup = ctx.phone || (normalizePhoneForLookup(conversations.get(from)?.lastKnownPhone) || "");
+          const nameForLookup  = ctx.name  || "";
+
+          // 4.1) Busca ampla por paciente no período
+          const rawEvents = await findPatientEvents({
+            phone: phoneForLookup,   // mesmo que a função ignore, vamos refinar localmente
+            name:  nameForLookup,
+            daysBack: 180,
+            daysAhead: 365
+          });
+
+          // 4.2) Filtra PRIMEIRO pela identidade (telefone/nome)
+          const idFilter = { phone: phoneForLookup, name: nameForLookup };
+          let filtered = rawEvents.filter(ev => eventMatchesIdentity(ev, idFilter));
+
+          // 4.3) Se veio data/hora, aplicar como filtros ADICIONAIS
+          if (ctx.dateISO) {
+            const dayStart = new Date(ctx.dateISO);
+            const dayEnd   = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+
+            filtered = filtered.filter(ev => {
+              const dt = ev.startISO ? new Date(ev.startISO) : null;
+              if (!dt) return false;
+              if (dt < dayStart || dt >= dayEnd) return false;
+
+              if (ctx.timeHHMM) {
+                const hh = String(dt.getHours()).padStart(2, "0");
+                const mi = String(dt.getMinutes()).padStart(2, "0");
+                const hhmm = `${hh}:${mi}`;
+                // tolerância de 15 min
+                if (hhmm !== ctx.timeHHMM) {
+                  const target = new Date(`${dayStart.toISOString().slice(0,10)}T${ctx.timeHHMM}:00`);
+                  const diff = Math.abs(dt.getTime() - target.getTime());
+                  if (diff > 15 * 60 * 1000) return false;
+                }
+              }
+              return true;
+            });
+          }
+
+          matches = filtered;
+        } catch (e) {
+          console.error("[cancel-lookup] erro:", e?.message || e);
+          matches = [];
+        }
+
+        // 5) Se nada encontrado, peça o que falta (sem travar)
+        if (!matches.length) {
+          const faltantes = [];
+          if (!ctx.phone) faltantes.push("Telefone");
+          if (!ctx.name)  faltantes.push("Nome");
+          const pedacos =
+            faltantes.length
+              ? `Tente me enviar ${faltantes.join(" e ")} (pode ser só um deles)`
+              : "Se puder, me confirme a **data** (ex.: 26/09) e o **horário** (ex.: 09:00) do agendamento";
+          await sendText({
+            to: from,
+            text:
+              "Não encontrei seu agendamento com as informações atuais.\n" +
+              pedacos + " para eu localizar certinho."
+          });
+          return;
+        }
+
+        // 6) Se múltiplos, lista para escolha
+        if (matches.length > 1 && !ctx.chosenEvent) {
+          const linhas = matches.map((ev, i) => `${i + 1}) ${ev.dayLabel} ${ev.timeLabel} — ${ev.summary || "Consulta"}`);
+          await sendText({
+            to: from,
+            text:
+              "Encontrei mais de um agendamento. Escolha **1**, **2**, **3**...\n" +
+              linhas.join("\n")
+          });
+          convMem.cancelCtx.matchList = matches;
+          convMem.updatedAt = Date.now();
+          return;
+        }
+
+        // 7) Se ainda não fixou um evento (mas só há 1), pega o único
+        if (!ctx.chosenEvent && matches.length === 1) {
+          ctx.chosenEvent = matches[0];
+        }
+
+        if (!ctx.chosenEvent) {
+          // ainda não escolheu corretamente
+          return;
+        }
+
+        // 8) Confirma ANTES de cancelar (novo passo)
+        if (ctx.chosenEvent && !ctx.awaitingConfirm && !ctx.confirmed) {
+          const who = (ctx.name && ctx.name !== "Paciente (WhatsApp)") ? `, ${ctx.name}` : "";
+          const dd = ctx.chosenEvent.dayLabel;
+          const hhmm = ctx.chosenEvent.timeLabel;
+
+          await sendText({
+            to: from,
+            text:
+              `Pronto${who}, encontrei sua consulta em **${dd}**, às **${hhmm}**.\n` +
+              `Posso proceder com o cancelamento? Responda sim ou não.`
+          });
+
+          // marca que estamos aguardando confirmação
+          ctx.awaitingConfirm = true;
+          convMem.updatedAt = Date.now();
+          return;
+        }
+
+        // 8) Cancelar no Google (executa somente após confirmação "sim")
+        if (!ctx.confirmed) {
+          // ainda não confirmou; não executa cancelamento
+          return;
+        }
+        try {
+          await cancelCalendarEvent({ eventId: ctx.chosenEvent.id });
+        } catch (e) {
+
+          console.error("[cancel-google] erro:", e?.message || e);
+          await sendText({
+            to: from,
+            text: "Tive um erro ao cancelar no calendário. Pode me enviar novamente as informações ou digitar 'reset' para recomeçar?"
+          });
+          return;
+        }
+
+        // Mensagem padrão compatível com seu fluxo antigo (mantida)
+        const dd = ctx.chosenEvent.dayLabel;
+        const hhmm = ctx.chosenEvent.timeLabel;
+        const yy = new Date(ctx.chosenEvent.startISO).getFullYear().toString().slice(-2);
+        const cancelText = `Pronto! Sua consulta com a Dra. Jenifer está cancelada para o dia ${dd}/${yy} ${hhmm}.`;
+
+        await sendText({ to: from, text: cancelText });
+
+        // 9) Se era remarcar, oferecer horários (com "opção N")
+        const shouldReschedule = convMem.after === "schedule";
+        convMem.mode = null;
+        convMem.after = null;
+
+        if (shouldReschedule) {
+          const slots = await listAvailableSlots({
+            fromISO: new Date().toISOString(),
+            days: 14,
+            limit: SLOTS_PAGE_SIZE
+          });
+
+          let msg;
+          if (!slots.length) {
+            msg = "Cancelamento concluído. Vamos remarcar? Não encontrei horários nos próximos dias. " +
+                  "Se preferir, me diga uma **data específica** (ex.: 24/09).";
+          } else {
+            const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`).join("\n");
+            msg = "Cancelamento concluído, {{nome}}. Vamos remarcar agora. Seguem as opções:\n" + 
+              linhas +
               '\n\nResponda com **opção N** (ex.: "opção 3") ou digite **data e horário** (ex.: "24/09 14:00").\n' +
               'Se quiser ver **mais opções**, responda: **mais**.';
-        convMem.lastSlots = slots;
-        convMem.slotCursor = { fromISO: new Date().toISOString(), page: 1 };
-        convMem.updatedAt = Date.now();
-      }
-      await sendText({ to: from, text: msg });
-    }
+            convMem.lastSlots = slots;
+            convMem.slotCursor = { fromISO: new Date().toISOString(), page: 1 };
+            convMem.updatedAt = Date.now();
+          }
+          await sendText({ to: from, text: msg });
+        }
 
-    return; // não deixa cair em outras regras
+        return; // não deixa cair em outras regras
+        // ======================================================================
+        // ====== FIM DO SEU CÓDIGO ORIGINAL (INALTERADO) =======================
+        // ======================================================================
+      }
+    } catch {}
   }
 }
 
