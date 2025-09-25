@@ -2070,7 +2070,6 @@ try {
   }
 } catch {}
 
-}
 
 // <-- fecha o try global do handleInbound
 } catch (err) {
