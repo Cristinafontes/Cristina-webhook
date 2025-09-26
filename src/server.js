@@ -2055,22 +2055,22 @@ if (finalAnswer) {
       // Se já existe histórico ou há fallback ativo, elimine qualquer reapresentação.
   const convSnap = getConversation(from);
   if ((convSnap?.messages?.length || 0) > 0 || convSnap?.ai?.active) {
-    finalAnswer = String(finalAnswer)
-      // linhas típicas de apresentação (“Olá! … sou a Secretária Cristina …”)
-      .replace(/^\s*ol[áa][!,. ]+.*?(sou|aqui\s*é)\s+a?\s*secret[áa]ria\s+cristina.*$/im, "")
-      .replace(/\b(sou\s+a\s+cristina|me\s+chamo\s+cristina|secret[áa]ria\s+cristina)\b.*$/im, "")
-      // saudações soltas no início
-      .replace(/^\s*(ol[áa]|oi|bom\s*dia|boa\s*tarde|boa\s*noite)[!,. ]*\s*/i, "")
-      .trim();
-  }
-
+  finalAnswer = String(finalAnswer)
+    // linhas típicas de apresentação (“Olá! … sou a Secretária Cristina …”)
+    .replace(/^\s*ol[áa][!,. ]+.*?(sou|aqui\s*é)\s+a?\s*secret[áa]ria\s+cristina.*$/im, "")
+    .replace(/\b(sou\s+a\s+cristina|me\s+chamo\s+cristina|secret[áa]ria\s+cristina)\b.*$/im, "")
+    // saudações soltas no início
+    .replace(/^\s*(ol[áa]|oi|bom\s*dia|boa\s*tarde|boa\s*noite)[!,. ]*\s*/i, "")
+    // frases padrão que queremos cortar
     .replace(/vou verificar a disponibilidade.*?(confirmo já)?/gi, "")
     .replace(/vou verificar.*?(disponibilidade|agenda)?/gi, "")
-    .replace(/deixe[- ]?me checar.*?/gi, "")
+    .replace(/deixe-?[ ]?me checar.*?/gi, "")
     .replace(/vou confirmar.*?/gi, "")
     .replace(/vou conferir.*?/gi, "")
     .replace(/já te confirmo.*?/gi, "")
     .trim();
+}
+
 
   appendMessage(from, "assistant", finalAnswer);
   await sendText({ to: from, text: finalAnswer });
