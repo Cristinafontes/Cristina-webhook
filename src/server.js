@@ -793,13 +793,57 @@ async function aiFallback({ from, userText, scope = "geral", note = "" }) {
 
     // Chama IA
     const answer = await askCristina({ userText: composed, userPhone: String(from) });
+// === CTA inteligente: responde a dúvida e puxa de volta para o passo certo ===
+let final = answer;
+try {
+  const convState = ensureConversation(from);
+  const ctas = [];
+
+  // 1) Se estamos no fluxo de cancelamento e o paciente ainda precisa escolher 1/2/3
+  const inCancel = convState?.mode === "cancel";
+  const hasListToPick =
+    !!(convState?.cancelCtx?.matchList && Array.isArray(convState.cancelCtx.matchList) &&
+       convState.cancelCtx.matchList.length && !convState.cancelCtx.chosenEvent);
+
+  if (inCancel && hasListToPick) {
+    ctas.push('Para continuar o **cancelamento**, responda com o **número da lista** (1, 2, 3...).');
+    ctas.push('Se preferir **remarcar** ou **tirar dúvidas**, é só dizer — eu te redireciono sem reiniciar.');
+  }
+
+  // 2) Se há uma lista de horários aberta (agendamento) e aguardamos "opção N"
+  const hasOpenSlots =
+    !!(convState?.lastSlots && Array.isArray(convState.lastSlots) && convState.lastSlots.length);
+
+  if (!inCancel && hasOpenSlots) {
+    ctas.push('Para agendar agora, responda **opção N** (ex.: "opção 3").');
+    ctas.push('Você também pode digitar **data e horário** (ex.: "24/09 14:00") ou pedir **mais** opções.');
+  }
+
+  // 3) Se estamos em agendamento mas sem lista aberta, peça data/hora no formato correto
+  if (!inCancel && !hasOpenSlots && scope === "agendamento") {
+    ctas.push('Quer seguir? Me diga **data e horário** no formato **"dd/mm hh:mm"** (ex.: "24/09 11:00").');
+    ctas.push('Se quiser **cancelar** ou **remarcar**, é só falar que eu te levo para o fluxo certo.');
+  }
+
+  // 4) Em cancelamento, mas sem lista e sem chosenEvent: peça identidade/filtros
+  if (inCancel && !hasListToPick && !(convState?.cancelCtx?.chosenEvent)) {
+    ctas.push('Para localizar seu agendamento, me envie **Telefone** (DDD + número) **e/ou** **Nome completo**.');
+    ctas.push('Se souber, informe **data e horário** (ex.: "26/09 09:00") para filtrar mais rápido.');
+  }
+
+  if (ctas.length) {
+    final = `${answer}\n\n${ctas.join(' ')}`;
+  }
+} catch (e) {
+  console.error("[aiFallback][cta] erro:", e?.message || e);
+}
 
     // Anti-loop: evita “autolista” ou re-promessas neste mesmo turno
     ensureConversation(from).justPickedOption = true;
 
     // Registra e envia
-    appendMessage(from, "assistant", answer);
-    await sendText({ to: from, text: answer });
+    appendMessage(from, "assistant", final);
+    await sendText({ to: from, text: final });
   } catch (e) {
     console.error("[aiFallback] erro:", e?.message || e);
   }
