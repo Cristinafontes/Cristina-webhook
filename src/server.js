@@ -744,6 +744,66 @@ function appendMessage(phone, role, content) {
 function resetConversation(phone) {
   conversations.delete(phone);
 }
+// === Fallback IA contextual (entra na primeira mensagem "fora de trilho") ===
+async function aiFallback({ from, userText, scope = "geral", note = "" }) {
+  try {
+    const conv = ensureConversation(from);
+
+    // Monta "composed" com histórico + dicas invisíveis (mesma lógica do seu composed atual)
+    const nowMs = Date.now();
+    const greetedAt = conv?.greetedAt || 0;
+    const justGreetedRecently = (nowMs - greetedAt) < 30 * 60 * 1000;
+
+    const lastBookedAt = conv?.lastBookedAt || 0;
+    const justBookedRecently = (nowMs - lastBookedAt) < 2 * 60 * 1000;
+
+    const hints = [];
+    if (justGreetedRecently) {
+      hints.push("NÃO se reapresente. Continue a conversa de onde parou.");
+    }
+    if (justBookedRecently) {
+      hints.push("O agendamento JÁ FOI confirmado no sistema. NÃO peça confirmação novamente; ofereça orientações pré-consulta ou ajuda extra.");
+    }
+    hints.push("Se o paciente mudar de intenção (agendar ↔ cancelar ↔ remarcar ↔ tirar dúvida), acolha e redirecione para o fluxo correto, sem reiniciar e sem repetir apresentação.");
+    if (scope) hints.push(`Contexto atual: ${scope}.`);
+    if (note)  hints.push(note);
+
+    const hintsBlock = hints.length ? `\n\n[HINTS (NÃO MOSTRAR AO PACIENTE): ${hints.join(" ")}]` : "";
+
+    let composed;
+    if (conv && conv.messages?.length) {
+      const lines = conv.messages.map(m => m.role === "user" ? `Paciente: ${m.content}` : `Cristina: ${m.content}`);
+      lines.push(`Paciente: ${userText}`);
+      let body = lines.join("\n");
+      if (body.length > MAX_CONTEXT_CHARS) {
+        const rev = lines.slice().reverse();
+        const kept = [];
+        let total = 0;
+        for (const line of rev) {
+          total += line.length + 1;
+          if (total > MAX_CONTEXT_CHARS) break;
+          kept.push(line);
+        }
+        body = kept.reverse().join("\n");
+      }
+      composed = `Contexto de conversa (mais recente por último):\n${body}\n\nResponda de forma consistente com o histórico, mantendo o tom e as regras da clínica.` + hintsBlock;
+    } else {
+      composed = (userText || "") + hintsBlock;
+    }
+
+    // Chama IA
+    const answer = await askCristina({ userText: composed, userPhone: String(from) });
+
+    // Anti-loop: evita “autolista” ou re-promessas neste mesmo turno
+    ensureConversation(from).justPickedOption = true;
+
+    // Registra e envia
+    appendMessage(from, "assistant", answer);
+    await sendText({ to: from, text: answer });
+  } catch (e) {
+    console.error("[aiFallback] erro:", e?.message || e);
+  }
+}
 
 setInterval(() => {
   const cutoff = nowMs() - MEMORY_TTL_HOURS * 60 * 60 * 1000;
@@ -1056,13 +1116,14 @@ if (!ctx.phone && !ctx.name) {
 
     // 4) Buscar eventos: identidade (Telefone e/ou Nome) é obrigatória; Data/Hora são filtros adicionais
 if (!ctx.phone && !ctx.name) {
-  await sendText({
-    to: from,
-    text:
-      "Preciso de **Telefone** (DDD + número) **e/ou** **Nome completo** para localizar seu agendamento.\n" +
-      "Se tiver, **data** e **horário** ajudam como filtros (ex.: 26/09 09:00)."
+    await aiFallback({
+    from,
+    userText,
+    scope: "cancelamento",
+    note: "Peça de forma acolhedora telefone e/ou nome; se o paciente quiser remarcar, reconheça e redirecione."
   });
   return;
+
 }
 
 let matches = [];
@@ -1129,6 +1190,13 @@ try {
           "Não encontrei seu agendamento com as informações atuais.\n" +
           pedacos + " para eu localizar certinho."
       });
+      await aiFallback({
+  from,
+  userText,
+  scope: "cancelamento",
+  note: "Ajude o paciente a refinar os dados para localizar o agendamento. Se ele quiser remarcar ou tirar dúvidas, ofereça essas opções e redirecione sem reiniciar a conversa."
+});
+
       return;
     }
 
@@ -1141,6 +1209,13 @@ try {
           "Encontrei mais de um agendamento. Escolha **1**, **2**, **3**...\n" +
           linhas.join("\n")
       });
+      await aiFallback({
+  from,
+  userText,
+  scope: "cancelamento",
+  note: "Explique que o paciente precisa responder com o número da opção correspondente (1, 2, 3...). Se ele digitar algo fora do padrão, tente entender a intenção e confirmar. Se ele quiser remarcar ou cancelar em vez de escolher, redirecione sem reiniciar a conversa."
+});
+
       convMem.cancelCtx.matchList = matches;
       convMem.updatedAt = Date.now();
       return;
@@ -1364,6 +1439,13 @@ try {
           to: from,
           text: `No **${lbl}** não temos expediente. Posso te enviar **opções na segunda-feira** ou em outro dia que você preferir.`
         });
+        await aiFallback({
+  from,
+  userText,
+  scope: "agendamento",
+  note: "Explique que no fim de semana não há atendimento e ajude o paciente a escolher um dia útil ou sugerir uma nova data. Se ele mudar de ideia e quiser reagendar ou cancelar, redirecione sem reiniciar a conversa."
+});
+
         return;
       }
 
@@ -1557,6 +1639,13 @@ if (dayStart.getTime() < today0.getTime()) {
     to: from,
     text: "Essa data já passou. Por favor, informe **uma data a partir de hoje** (ex.: 24/09)."
   });
+  await aiFallback({
+  from,
+  userText,
+  scope: "agendamento",
+  note: "Sugira ao paciente escolher uma nova data futura (dia útil) e ofereça próximos horários disponíveis. Não reinicie a conversa."
+});
+
   return;
 }
 
@@ -1643,12 +1732,15 @@ try {
 
     const parsed = await parseCandidateDateTime(`${dd}/${mm} ${hh}:${mi}`, tz);
     if (!parsed || !parsed.found) {
-      await sendText({
-        to: from,
-        text: 'Desculpe, não entendi o que falou. 😅\n' +
-              'Tente no formato **"24/09 11:00"** (dia/mês e hora:minuto).'
-      });
-      return; // <- evita cair na IA/auto-lista com entrada inválida
+        // aciona IA contextualizada no agendamento ANTES de sair
+  await aiFallback({
+    from,
+    userText,
+    scope: "agendamento",
+    note: "Ajude a coletar data e horário válidos sem mudar o fluxo."
+  });
+  return;
+
     }
   }
 } catch {}
@@ -1897,6 +1989,7 @@ if (busy) {
   }
   const alternativas = await listAvailableSlots({
   fromISO: startISO,
+    
   days: 3,   // só os próximos 3 dias como alternativa
   limit: 5
 });
