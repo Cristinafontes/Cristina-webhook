@@ -190,6 +190,7 @@ async function triggerIAFallback({ from, stage, userText }) {
   // Instruções **estritas** para a Cristina (NÃO mostrar ao paciente)
   const hiddenGuidelines = [
     "Não reinicie a conversa; continue exatamente do ponto atual.",
+    "Não se apresente (ex.: 'Olá! Aqui é a Secretária...'); a conversa já está em andamento.",
     "Não apresente opções numeradas. Prefira comandos: \"agendar consulta\", \"cancelar consulta\", \"reagendar consulta\", \"tirar dúvida\".",
     "Se o paciente mudou de ideia, acolha e redirecione ao fluxo apropriado, SEM pedir dados repetidos.",
     "Se o modo for CANCELAMENTO e estiver aguardando confirmação, pergunte objetivamente por **sim** ou **não**.",
@@ -219,6 +220,13 @@ async function triggerIAFallback({ from, stage, userText }) {
   const answer = await askCristina({ userText: composed, userPhone: phone });
   if (answer && answer.trim()) {
   let final = answer.trim();
+    // Remove qualquer saudação/autoapresentação que a IA possa ter colocado
+if ((getConversation(phone)?.messages || []).length > 0) {
+  final = final.replace(
+    /^\s*(ol[áa]|oi)[^.\n]*secret[áa]ria[^\n]*[\.\!]\s*/i,
+    ""
+  );
+}
 
   // --- CTA dinâmico, contextualizado ao fluxo ---
   // Evita duplicar se a IA já pediu SIM/NÃO ou já sugeriu os comandos.
@@ -257,6 +265,17 @@ async function triggerIAFallback({ from, stage, userText }) {
       "\n\nSe quiser, posso **retomar o cancelamento** agora. " +
       "Ou você pode dizer: **reagendar consulta**, **agendar consulta** ou **tirar dúvida**.";
   }
+// Throttle do CTA: só anexa se mudou de etapa ou passaram 120s
+const convCta = ensureConversation(phone);
+const lastCtaAt = convCta.lastCTAPromptAt || 0;
+const lastCtaStage = convCta.lastCTAPromptStage || "";
+const allowCTA = (stage !== lastCtaStage) || (Date.now() - lastCtaAt > 120000);
+
+if (cta && !alreadyHasCTA && allowCTA) {
+  final += cta;
+  convCta.lastCTAPromptAt = Date.now();
+  convCta.lastCTAPromptStage = stage;
+}
 
   if (cta && !alreadyHasCTA) final += cta;
 
@@ -1287,6 +1306,21 @@ try {
 
     // 6) Se múltiplos, lista para escolha
     if (matches.length > 1 && !ctx.chosenEvent) {
+      // --- GUARDA: se o texto não parece escolha (1, 2...), nem data/hora,
+// e contém pergunta/assunto paralelo, aciona a IA em vez de relistar
+const looksOption = /^\s*(?:op[cç][aã]o\s*)?\d{1,2}\s*$/i.test(userText || "");
+const hintsDate   = /(\d{1,2})[\/\-](\d{1,2})/.test(userText || "");
+const hintsTime   = /\b(\d{1,2})(?::|h)\d{2}\b/.test(userText || "");
+const offTopicQ   = /[\?]|quanto\s+custa|pre[cç]o|nota\s+fiscal|ortopedista|valor|conv[eê]nio/i.test(userText || "");
+
+if (!looksOption && !hintsDate && !hintsTime && offTopicQ) {
+  await triggerIAFallback({
+    from,
+    stage: "cancelamento: lista apresentada; paciente fez pergunta fora da escolha (aguardava 1, 2, 3...)",
+    userText
+  });
+  return;
+}
       const linhas = matches.map((ev, i) => `${i + 1}) ${ev.dayLabel} ${ev.timeLabel} — ${ev.summary || "Consulta"}`);
       await sendText({
         to: from,
