@@ -240,6 +240,56 @@ const MAX_CONTEXT_CHARS = Number(process.env.MAX_CONTEXT_CHARS || 20000);
 
 
 const conversations = new Map();
+// === Hints de contexto para a IA (não reapresentar, não “quebrar” o fluxo) ===
+function setAIFallback(phone, stage, data = {}) {
+  const c = ensureConversation(phone);
+  c.ai = {
+    active: true,               // habilita o fallback contextual
+    stage,                      // ex.: 'list_slots', 'cancel_lookup', 'cancel_confirm'
+    data,                       // payload do estágio (horários listados, evento escolhido, etc.)
+    noGreeting: true,           // IA não deve se reapresentar
+  };
+  c.updatedAt = Date.now();
+}
+
+function clearAIFallback(phone) {
+  const c = getConversation(phone);
+  if (c && c.ai) c.ai.active = false;
+}
+
+// Monta um prompt curto para a IA com contexto do estágio atual
+function buildAIPrompt(phone) {
+  const c = getConversation(phone);
+  if (!c?.ai?.active) return null;
+
+  const { stage, data, noGreeting } = c.ai || {};
+  let context = "";
+  if (stage === "list_slots") {
+    const lines = (data?.slots || []).map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`).join("\n");
+    context =
+      `Contexto: o servidor acabou de listar horários para o paciente.\n` +
+      `Horários listados:\n${lines || "(sem horários)"}\n` +
+      `Objetivo: tirar dúvidas sem se reapresentar e SEM relistar.\n` +
+      `Sempre finalize com uma pergunta leve para decidir: (1) continuar o agendamento, (2) remarcar, (3) cancelar, (4) tirar outra dúvida.`;
+  } else if (stage === "cancel_lookup") {
+    context =
+      `Contexto: fluxo de CANCELAMENTO. Estamos coletando identidade (telefone/nome) e, se possível, data/hora.\n` +
+      `Objetivo: tirar dúvidas sem sair do fluxo. Não confirmar cancelamento aqui.\n` +
+      `Finalize oferecendo: enviar telefone/nome, informar data/hora, ou desistir do cancelamento para remarcar/agendar.`;
+  } else if (stage === "cancel_choose") {
+    const lines = (data?.matches || []).map((ev, i) => `${i + 1}) ${ev.dayLabel} ${ev.timeLabel} — ${ev.summary||"Consulta"}`).join("\n");
+    context =
+      `Contexto: foram encontrados múltiplos agendamentos e o servidor pediu a escolha (1,2,...).\n` +
+      `Eventos:\n${lines}\n` +
+      `Objetivo: esclarecer dúvidas sobre qual é o correto sem relistar. Finalize pedindo o número (1,2,3).`;
+  } else if (stage === "cancel_confirm") {
+    context =
+      `Contexto: o servidor solicitou CONFIRMAÇÃO do cancelamento (responder “sim” ou “não”).\n` +
+      `Objetivo: responder dúvidas sobre consequências do cancelamento e finalizar perguntando “Confirmar o cancelamento (sim/não)?”.`;
+  }
+  return { context, noGreeting: !!noGreeting };
+}
+
 
 function nowMs() { return Date.now(); }
 
@@ -790,6 +840,34 @@ async function handleInbound(req, res) {
     }
 
     const trimmed = (userText || "").trim().toLowerCase();
+    // === Gancho de fallback contextual da IA ===
+// Observação: não intercepta comandos de fluxo como "opção N", número puro, ou "mais".
+{
+  const conv = ensureConversation(from);
+  const wantsControl =
+    /^\s*op[cç][aã]o\s*\d+\)?\.?\s*$/i.test(userText || "") ||
+    /^\s*\d{1,2}\s*$/.test(userText || "") ||
+    /^(mais|ver mais|mais op[cç][oõ]es)$/i.test(trimmed);
+
+  if (conv?.ai?.active && !wantsControl) {
+    try {
+      const { context, noGreeting } = buildAIPrompt(from) || {};
+      if (context) {
+        // histórico já está em conversations; só passamos instruções de sistema e a última fala do usuário
+        const system = `${context}\nRegras: não se apresente${noGreeting ? " e não cumprimente" : ""}. Seja direto e gentil.`;
+        appendMessage(from, "user", userText);
+        const reply = await askCristina({ system, user: userText, memory: getConversation(from) });
+        appendMessage(from, "assistant", reply);
+        await sendText({ to: from, text: reply });
+        // Mantém o fallback ativo — até que o servidor avance para o próximo estágio ou seja limpo explicitamente.
+        return;
+      }
+    } catch (e) {
+      console.error("[AI Fallback] erro:", e?.message || e);
+    }
+  }
+}
+
   // === MEMÓRIA DE IDENTIDADE (nome/telefone) ===
 {
   const conv = ensureConversation(from);
@@ -835,6 +913,8 @@ if (isPureGreeting) {
     "Por favor, me envie **Telefone** (DDD + número) **e/ou** **Nome completo**.\n" +
     "Se você souber, **data e horário** também me ajudam a localizar rapidinho (ex.: 26/09 09:00)."
 });
+    setAIFallback(from, "cancel_lookup");
+
 return;
   }
 
@@ -848,10 +928,12 @@ return;
 await sendText({
   to: from,
   text:
-    "Certo, vamos **cancelar**. Para eu localizar seu agendamento, me envie **Telefone** (DDD + número) **e/ou** **Nome completo**.\n" +
-    "Se você souber, **data e horário** também me ajudam a localizar (ex.: 26/09 09:00)."
+    "Certo, vamos **cancelar**. Para localizar seu agendamento, me envie **Telefone** (DDD + número) **e/ou** **Nome completo**.\n" +
+    "Se souber, **data e horário** ajudam (ex.: 26/09 09:00)."
 });
+setAIFallback(from, "cancel_lookup"); // <- IA ajuda com dúvidas sem sair do cancelamento
 return;
+
   }
 }
 // ====== [IDENTIDADE DO PACIENTE] Helpers de comparação por telefone/nome ======
@@ -969,11 +1051,13 @@ if (ctx.awaitingConfirm) {
     convMem.after = null;
 
     await sendText({
-      to: from,
-      text:
-        "Sem problema! Posso **manter** seu agendamento, **tirar dúvidas** sobre a consulta, ou, se preferir, posso **remarcar** para outro dia/horário. Como posso te ajudar agora?"
-    });
-    return;
+  to: from,
+  text:
+    "Sem problema! Posso **manter** seu agendamento, **tirar dúvidas**, ou **remarcar** para outro dia/horário. O que prefere?"
+});
+clearAIFallback(from);
+return;
+
   } else {
     // não entendi; reapresenta o pedido, sem travar
     await sendText({
@@ -1143,6 +1227,7 @@ try {
       });
       convMem.cancelCtx.matchList = matches;
       convMem.updatedAt = Date.now();
+      setAIFallback(from, "cancel_choose", { matches });
       return;
     }
 
@@ -1167,6 +1252,7 @@ if (ctx.chosenEvent && !ctx.awaitingConfirm && !ctx.confirmed) {
       `Pronto${who}, encontrei sua consulta em **${dd}**, às **${hhmm}**.\n` +
       `Posso proceder com o cancelamento? Responda sim ou não.`
   });
+setAIFallback(from, "cancel_confirm");
 
   // marca que estamos aguardando confirmação
   ctx.awaitingConfirm = true;
@@ -1227,6 +1313,8 @@ try {
       }
       await sendText({ to: from, text: msg });
     }
+// Acabamos de listar horários para remarcar → IA ajuda com dúvidas sobre essas opções
+setAIFallback(from, "list_slots", { slots });
 
     return; // não deixa cair em outras regras
   }
@@ -1263,6 +1351,8 @@ try {
         convUpd.lastSlots = weekdayOnly;
         convUpd.slotCursor = { fromISO: nextFrom, page: (cursor.page || 1) + 1 };
         convUpd.updatedAt = Date.now();
+        setAIFallback(from, "list_slots", { slots: weekdayOnly });
+
       }
       return; // evita cair em outras regras neste turno
     }
@@ -1297,6 +1387,7 @@ convFlag.justPickedOption = true; // evita autolista no mesmo turno
 // evita relistar/repensar a mesma página de opções no próximo turno
 const convMem = ensureConversation(from);
 convMem.lastSlots = [];
+clearAIFallback(from); // a escolha já foi feita; IA não precisa interceptar aqui
 
       // segue o fluxo normal (sem return)
     }
@@ -1380,6 +1471,7 @@ try {
           to: from,
           text: `Para **${ddmm}** não encontrei horários livres. Posso te enviar alternativas próximas dessa data ou procurar outro dia.`
         });
+        setAIFallback(from, "list_slots", { slots: [] });
       } else {
         const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`).join("\n");
         await sendText({
@@ -1389,6 +1481,7 @@ try {
         const convMem = ensureConversation(from);
         convMem.lastSlots = slots;
         convMem.updatedAt = Date.now();
+        setAIFallback(from, "list_slots", { slots });
       }
       return;
     }
