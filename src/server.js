@@ -758,15 +758,22 @@ async function aiFallback({ from, userText, scope = "geral", note = "" }) {
     const justBookedRecently = (nowMs - lastBookedAt) < 2 * 60 * 1000;
 
     const hints = [];
-    if (justGreetedRecently) {
-      hints.push("NÃO se reapresente. Continue a conversa de onde parou.");
-    }
-    if (justBookedRecently) {
-      hints.push("O agendamento JÁ FOI confirmado no sistema. NÃO peça confirmação novamente; ofereça orientações pré-consulta ou ajuda extra.");
-    }
-    hints.push("Se o paciente mudar de intenção (agendar ↔ cancelar ↔ remarcar ↔ tirar dúvida), acolha e redirecione para o fluxo correto, sem reiniciar e sem repetir apresentação.");
-    if (scope) hints.push(`Contexto atual: ${scope}.`);
-    if (note)  hints.push(note);
+
+// Sempre: proibir apresentação/saudação
+hints.push("NÃO cumprimente e NÃO se apresente novamente. Vá direto ao ponto a partir do contexto atual.");
+
+// Regras por escopo
+if (scope === "cancelamento") {
+  hints.push("Você está NO FLUXO DE CANCELAMENTO. NÃO ofereça 'agendar' por conta própria.");
+  hints.push("Sua resposta deve: 1) tirar a dúvida do paciente; 2) lembrar que para continuar o cancelamento ele deve responder com o número da lista (1, 2, 3...); 3) só mudar de fluxo se o PACIENTE pedir (ex.: 'quero remarcar').");
+} else if (scope === "agendamento") {
+  hints.push("Você está NO FLUXO DE AGENDAMENTO. Ajude a chegar em uma data/horário válido, aceitar 'opção N' ou 'mais'. Evite falar de cancelamento a menos que o paciente peça.");
+}
+
+// Mantém regra geral e contexto
+hints.push("Se o paciente mudar de intenção (agendar ↔ cancelar ↔ remarcar ↔ tirar dúvida), acolha e redirecione para o fluxo correto, sem reiniciar e sem repetir apresentação.");
+if (scope) hints.push(`Contexto atual: ${scope}.`);
+if (note)  hints.push(note);
 
     const hintsBlock = hints.length ? `\n\n[HINTS (NÃO MOSTRAR AO PACIENTE): ${hints.join(" ")}]` : "";
 
@@ -809,26 +816,51 @@ try {
     ctas.push('Para continuar o **cancelamento**, responda com o **número da lista** (1, 2, 3...).');
     ctas.push('Se preferir **remarcar** ou **tirar dúvidas**, é só dizer — eu te redireciono sem reiniciar.');
   }
+// --- Filtros anti-duplicação de CTA (olha a última msg da assistente) ---
+const lastAssistant =
+  (convState?.messages || []).slice().reverse().find(m => m.role === "assistant")?.content || "";
+
+// Já disse "responda com o número / opção N"
+const saidPick =
+  /responda[^.\n]*\b(n[uú]mero|op[cç][aã]o)\b|\bop[cç][aã]o\s*\d/i.test(lastAssistant);
+
+// Já ensinou formato de data/hora dd/mm hh:mm
+const saidDateFmt =
+  /formato[^.\n]*\b\d{2}\/\d{2}\s+\d{2}:\d{2}\b|dd\/mm\s+hh:mm/i.test(lastAssistant);
+
+// Já pediu Telefone (DDD + número) e/ou Nome completo
+const saidIdentity =
+  /(telefone\s*\(ddd|\bddd\s*\+)|nome\s+completo/i.test(lastAssistant);
 
   // 2) Se há uma lista de horários aberta (agendamento) e aguardamos "opção N"
   const hasOpenSlots =
     !!(convState?.lastSlots && Array.isArray(convState.lastSlots) && convState.lastSlots.length);
 
   if (!inCancel && hasOpenSlots) {
-    ctas.push('Para agendar agora, responda **opção N** (ex.: "opção 3").');
-    ctas.push('Você também pode digitar **data e horário** (ex.: "24/09 14:00") ou pedir **mais** opções.');
+        if (!saidPick) {
+            ctas.push('Para agendar agora, responda **opção N** (ex.: "opção 3").');
+        }
+    if (!saidDateFmt) {
+      ctas.push('Você também pode digitar **data e horário** (ex.: "24/09 14:00") ou pedir **mais** opções.');
+    }
   }
 
   // 3) Se estamos em agendamento mas sem lista aberta, peça data/hora no formato correto
   if (!inCancel && !hasOpenSlots && scope === "agendamento") {
-    ctas.push('Quer seguir? Me diga **data e horário** no formato **"dd/mm hh:mm"** (ex.: "24/09 11:00").');
-    ctas.push('Se quiser **cancelar** ou **remarcar**, é só falar que eu te levo para o fluxo certo.');
+    if (!saidDateFmt) {
+  ctas.push('Quer seguir? Me diga **data e horário** no formato **"dd/mm hh:mm"** (ex.: "24/09 11:00").');
+}
+ctas.push('Se quiser **cancelar** ou **remarcar**, é só falar que eu te levo para o fluxo certo.');
   }
 
   // 4) Em cancelamento, mas sem lista e sem chosenEvent: peça identidade/filtros
   if (inCancel && !hasListToPick && !(convState?.cancelCtx?.chosenEvent)) {
-    ctas.push('Para localizar seu agendamento, me envie **Telefone** (DDD + número) **e/ou** **Nome completo**.');
-    ctas.push('Se souber, informe **data e horário** (ex.: "26/09 09:00") para filtrar mais rápido.');
+    if (!saidIdentity) {
+  ctas.push('Para localizar seu agendamento, me envie **Telefone** (DDD + número) **e/ou** **Nome completo**.');
+}
+if (!saidDateFmt) {
+  ctas.push('Se souber, informe **data e horário** (ex.: "26/09 09:00") para filtrar mais rápido.');
+}
   }
 
   if (ctas.length) {
@@ -1085,6 +1117,20 @@ if (ctx.awaitingConfirm) {
       text: "Só para confirmar: deseja mesmo **cancelar** esse horário? Responda **sim** ou **não**."
     });
     return;
+  }
+}
+// === Guarda: já existe lista para escolher, mas a mensagem NÃO é um número ===
+if (Array.isArray(ctx.matchList) && ctx.matchList.length && !ctx.chosenEvent) {
+  const isJustNumber = /^\s*(\d{1,2})\s*$/.test(userText || "");
+  if (!isJustNumber) {
+    // O paciente fez uma pergunta ou saiu do script: responde a dúvida e puxa de volta
+    await aiFallback({
+      from,
+      userText,
+      scope: "cancelamento",
+      note: "Responda à dúvida do paciente e oriente: 'para continuar o cancelamento, responda com o número da lista (1, 2, 3...)'. Se ele pedir remarcar/cancelar outra coisa, redirecione sem reiniciar."
+    });
+    return; // evita relistar ou reiniciar coleta
   }
 }
 
