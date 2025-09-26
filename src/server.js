@@ -856,11 +856,14 @@ ctas.push('Se quiser **cancelar** ou **remarcar**, é só falar que eu te levo p
   // 4) Em cancelamento, mas sem lista e sem chosenEvent: peça identidade/filtros
   if (inCancel && !hasListToPick && !(convState?.cancelCtx?.chosenEvent)) {
     if (!saidIdentity) {
-  ctas.push('Para localizar seu agendamento, me envie **Telefone** (DDD + número) **e/ou** **Nome completo**.');
+  ctas.push('Se quiser **continuar o cancelamento**, me envie **Telefone** (DDD + número) **e/ou** **Nome completo**.');
 }
 if (!saidDateFmt) {
   ctas.push('Se souber, informe **data e horário** (ex.: "26/09 09:00") para filtrar mais rápido.');
 }
+// saída clara para troca de fluxo SEM reiniciar
+ctas.push('Se preferir **remarcar**, **agendar** ou **tirar dúvidas**, é só dizer — eu redireciono sem reiniciar.');
+
   }
 
   if (ctas.length) {
@@ -1087,6 +1090,32 @@ function eventMatchesIdentity(ev, { phone, name }) {
   const convMem = getConversation(from);
   if (convMem?.mode === "cancel") {
     const ctx = convMem.cancelCtx || (convMem.cancelCtx = { phone: "", name: "", dateISO: null, timeHHMM: null, chosenEvent: null });
+    
+    // --- Guarda #0: ainda sem identidade (telefone/nome) e o texto parece uma PERGUNTA
+if (!ctx.phone && !ctx.name) {
+  const t = (userText || "").trim();
+
+  // 1) heurística de “pergunta” (tem "?" ou começa com "é", "tem", "qual", "quando", "como", "onde", "por que", etc.)
+  const looksQuestion =
+    /\?/.test(t) ||
+    /^\s*(é|eh|tem|qual|quais|quando|como|onde|por\s*que|porque|posso|queria|pretendo|d[uú]vida|d[uú]vidas)\b/i.test(t);
+
+  // 2) intenção de trocar de fluxo (além dos intents que você já trata acima)
+  const changeFlow =
+    /\b(agendar|quero\s*agendar|remarcar|reagendar|tirar\s*d[uú]vida|d[uú]vidas)\b/i.test(t);
+
+  if (looksQuestion || changeFlow) {
+    await aiFallback({
+      from,
+      userText,
+      scope: "cancelamento",
+      note: "Responda à pergunta do paciente SEM se apresentar. Em seguida, ofereça: (a) continuar o cancelamento; (b) remarcar; (c) tirar dúvidas. Se ele optar por continuar cancelando, peça então Telefone/Nome. Não reinicie a conversa."
+    });
+    return; // não insiste no pedido de identidade neste turno
+  }
+}
+
+    
     // Se estamos aguardando confirmação do cancelamento:
 if (ctx.awaitingConfirm) {
   const yes = /\b(sim|pode|confirmo|confirmar|ok|isso|pode cancelar)\b/i.test(userText || "");
@@ -1290,15 +1319,20 @@ try {
       return;
     }
 
-    // 6) Se múltiplos, lista para escolha
-    if (matches.length > 1 && !ctx.chosenEvent) {
-      const linhas = matches.map((ev, i) => `${i + 1}) ${ev.dayLabel} ${ev.timeLabel} — ${ev.summary || "Consulta"}`);
-      await sendText({
-        to: from,
-        text:
-          "Encontrei mais de um agendamento. Escolha **1**, **2**, **3**...\n" +
-          linhas.join("\n")
-      });
+      // >>> Salva a lista ANTES do fallback (para o fallback saber que existe lista)
+  convMem.cancelCtx.matchList = matches;
+  convMem.updatedAt = Date.now();
+
+  await aiFallback({
+    from,
+    userText,
+    scope: "cancelamento",
+    note: "Explique que o paciente precisa responder com o número da opção correspondente (1, 2, 3...). Se ele digitar algo fora do padrão, tente entender a intenção e confirmar. Se ele quiser remarcar ou tirar dúvidas, redirecione sem reiniciar a conversa."
+  });
+
+  return;
+}
+
       await aiFallback({
   from,
   userText,
