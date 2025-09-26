@@ -121,6 +121,47 @@ async function sendText({ to, text }) {
   return out;
 }
 // ===== FIM do helper =======================================================
+// ===== Fallback unificado da IA (anti-loop + contexto da etapa) =====
+function shouldThrottleFallback(phone, stage, userText) {
+  const conv = ensureConversation(phone);
+  const now  = Date.now();
+  const lastAt    = conv.lastFallbackAt || 0;
+  const lastStage = conv.lastFallbackStage || "";
+  const lastText  = conv.lastFallbackText || "";
+  // Evita repetir fallback idêntico por ~35s
+  const THROTTLE_MS = 35000;
+  const sameStage   = stage === lastStage;
+  const sameText    = (userText || "").trim() === (lastText || "").trim();
+  if (sameStage && sameText && (now - lastAt) < THROTTLE_MS) return true;
+  return false;
+}
+
+async function triggerIAFallback({ from, stage, userText }) {
+  const phone = String(from);
+  if (shouldThrottleFallback(phone, stage, userText)) return;
+
+  // Hints de etapa: não reiniciar conversa, sem lista numerada
+  const stageHints = [
+    "NÃO reinicie a conversa; continue do ponto atual.",
+    "NÃO liste opções numeradas; peça comandos: \"agendar consulta\", \"cancelar consulta\", \"reagendar consulta\", \"tirar dúvida\".",
+    `Contexto atual do fluxo: ${stage}.`
+  ].join(" ");
+
+  const composed = (userText || "") +
+    `\n\n[HINTS (NÃO MOSTRAR AO PACIENTE): ${stageHints}]`;
+
+  const answer = await askCristina({ userText: composed, userPhone: phone });
+  if (answer && answer.trim()) {
+    appendMessage(phone, "assistant", answer);
+    await sendText({ to: phone, text: answer }); // respeita dedupe/cooldown do sendText
+  }
+
+  const convNow = ensureConversation(phone);
+  convNow.lastFallbackAt    = Date.now();
+  convNow.lastFallbackStage = stage;
+  convNow.lastFallbackText  = (userText || "").trim();
+  convNow.updatedAt = Date.now();
+}
 
 
 dotenv.config();
@@ -975,12 +1016,13 @@ if (ctx.awaitingConfirm) {
     });
     return;
   } else {
-    // não entendi; reapresenta o pedido, sem travar
-    await sendText({
-      to: from,
-      text: "Só para confirmar: deseja mesmo **cancelar** esse horário? Responda **sim** ou **não**."
-    });
-    return;
+    await triggerIAFallback({
+  from,
+  stage: "cancelamento: aguardando confirmação; paciente respondeu outra coisa",
+  userText
+});
+return;
+
   }
 }
 
@@ -1045,24 +1087,23 @@ if (candidateName) {
     // 3) GATE: só seguimos se tiver TELEFONE ou NOME; data/hora sozinha não basta
 if (!ctx.phone && !ctx.name) {
   // o paciente mandou apenas data/hora ou nada útil → peça identidade
-  await sendText({
-    to: from,
-    text:
-      "Para localizar com segurança, me envie **Telefone** (DDD + número) **e/ou** **Nome completo**.\n" +
-      "Se souber, **data e horário** também me ajudam (ex.: 26/09 09:00)."
-  });
-  return;
+ await triggerIAFallback({
+  from,
+  stage: "cancelamento: coletando identidade (telefone/nome); paciente desviou",
+  userText
+});
+return;
+
 }
 
     // 4) Buscar eventos: identidade (Telefone e/ou Nome) é obrigatória; Data/Hora são filtros adicionais
 if (!ctx.phone && !ctx.name) {
-  await sendText({
-    to: from,
-    text:
-      "Preciso de **Telefone** (DDD + número) **e/ou** **Nome completo** para localizar seu agendamento.\n" +
-      "Se tiver, **data** e **horário** ajudam como filtros (ex.: 26/09 09:00)."
-  });
-  return;
+  await triggerIAFallback({
+  from,
+  stage: "cancelamento: antes da busca; faltou identidade",
+  userText
+});
+return;
 }
 
 let matches = [];
@@ -1605,7 +1646,19 @@ if (dayStart.getTime() < today0.getTime()) {
   const looksOption = /^\s*(op[cç][aã]o\s*)?\d+[).]?\s*$/.test(rawNoGreeting);
 
 // evita a redundância quando a pessoa pede "mais próximo"
-const rawLite = rawNoGreeting
+
+// → Se não há pista de data/horário/opção, acione a IA no contexto certo
+if (!hintsDate && !hasExplicit && !looksOption) {
+  await triggerIAFallback({
+    from,
+    stage: "agendamento: aguardando data/horário; paciente trouxe outra pauta",
+    userText
+  });
+  return;
+}
+
+  
+  const rawLite = rawNoGreeting
   .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 
 const wantsNearest =
