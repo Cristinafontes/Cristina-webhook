@@ -218,9 +218,52 @@ async function triggerIAFallback({ from, stage, userText }) {
   // ======== CHAMA IA E ENVIA ========
   const answer = await askCristina({ userText: composed, userPhone: phone });
   if (answer && answer.trim()) {
-    appendMessage(phone, "assistant", answer);
-    await sendText({ to: phone, text: answer }); // respeita dedupe/cooldown
+  let final = answer.trim();
+
+  // --- CTA dinâmico, contextualizado ao fluxo ---
+  // Evita duplicar se a IA já pediu SIM/NÃO ou já sugeriu os comandos.
+  const alreadyHasCTA = /responda\s+sim\s+ou\s+n[aã]o|reagendar consulta|agendar consulta|tirar d[uú]vida/i.test(final);
+
+  // Lemos o contexto atual (já disponível acima na função)
+  // mode: "cancel" | null
+  // after: "schedule" | null
+  // awaitingConfirm: boolean
+  // alreadyConfirmed: boolean
+  let cta = "";
+
+  if (mode === "cancel") {
+    if (awaitingConfirm) {
+      cta =
+        "\n\nPara seguir, responda **sim** ou **não** para confirmar o cancelamento. " +
+        "Se preferir, você pode dizer: **reagendar consulta**, **agendar consulta** ou **tirar dúvida**.";
+    } else if (!alreadyConfirmed) {
+      // Coletando identidade / localizando evento / lista de escolhas
+      cta =
+        "\n\nSe desejar, posso **continuar o cancelamento** agora. " +
+        "Ou você pode dizer: **reagendar consulta**, **agendar consulta** ou **tirar dúvida**.";
+    } else {
+      // (Raro) já confirmou, mas ainda não executou
+      cta =
+        "\n\nSigo com o **cancelamento** agora? Se preferir, diga: **reagendar consulta**, **agendar consulta** ou **tirar dúvida**.";
+    }
+  } else if (after === "schedule") {
+    // Apenas por segurança: se cair aqui fora do modo cancel mas com after=schedule
+    cta =
+      "\n\nPosso **concluir o cancelamento** e já **remarcar** em seguida. " +
+      "Ou, se preferir, diga: **agendar consulta** ou **tirar dúvida**.";
+  } else {
+    // Fora do modo cancelamento (ex.: paciente perguntou preço enquanto cancelava)
+    cta =
+      "\n\nSe quiser, posso **retomar o cancelamento** agora. " +
+      "Ou você pode dizer: **reagendar consulta**, **agendar consulta** ou **tirar dúvida**.";
   }
+
+  if (cta && !alreadyHasCTA) final += cta;
+
+  appendMessage(phone, "assistant", final);
+  await sendText({ to: phone, text: final }); // respeita dedupe/cooldown
+}
+
 
   // Anti-loop / marcação
   const convNow = ensureConversation(phone);
