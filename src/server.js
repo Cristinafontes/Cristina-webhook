@@ -249,6 +249,9 @@ function setAIFallback(phone, stage, data = {}) {
     data,                       // payload do estágio (horários listados, evento escolhido, etc.)
     noGreeting: true,           // IA não deve se reapresentar
   };
+    // Evita reapresentação nas próximas respostas
+  if (!c.greetedAt) c.greetedAt = Date.now();
+
   c.updatedAt = Date.now();
 }
 
@@ -2049,6 +2052,18 @@ appendMessage(from, "user", userText);
 if (finalAnswer) {
   // (opcional) filtros de linguagem
   finalAnswer = finalAnswer
+      // Se já existe histórico ou há fallback ativo, elimine qualquer reapresentação.
+  const convSnap = getConversation(from);
+  if ((convSnap?.messages?.length || 0) > 0 || convSnap?.ai?.active) {
+    finalAnswer = String(finalAnswer)
+      // linhas típicas de apresentação (“Olá! … sou a Secretária Cristina …”)
+      .replace(/^\s*ol[áa][!,. ]+.*?(sou|aqui\s*é)\s+a?\s*secret[áa]ria\s+cristina.*$/im, "")
+      .replace(/\b(sou\s+a\s+cristina|me\s+chamo\s+cristina|secret[áa]ria\s+cristina)\b.*$/im, "")
+      // saudações soltas no início
+      .replace(/^\s*(ol[áa]|oi|bom\s*dia|boa\s*tarde|boa\s*noite)[!,. ]*\s*/i, "")
+      .trim();
+  }
+
     .replace(/vou verificar a disponibilidade.*?(confirmo já)?/gi, "")
     .replace(/vou verificar.*?(disponibilidade|agenda)?/gi, "")
     .replace(/deixe[- ]?me checar.*?/gi, "")
