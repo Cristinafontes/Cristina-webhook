@@ -118,12 +118,50 @@ async function sendText({ to, text }) {
   _lastSendAtByPhone.set(phone, Date.now());
   _lastPayloadByPhone.set(phone, { text: msg, at: Date.now() });
 
-  return out;
+   return out;
 }
-// ===== FIM do helper =======================================================
+// ==== FIM do helper =======================================================
 
+// ==== INÍCIO do helper de estágio/fallback =================================
+function _ensurePhoneDigits(n) {
+  return String(n || "").toString().replace(/\D/g, "");
+}
 
+/**
+ * Envia mensagem de etapa (server-driven) com:
+ *  - Stage/contexto atual (ex.: "schedule:list", "cancel:identify", etc.)
+ *  - Cauda de fallback para IA (CTA para voltar/redirecionar o fluxo)
+ *  - Sinal para não se reapresentar por alguns minutos
+ */
+async function stageSend({ to, text, stage }) {
+  const phone = _ensurePhoneDigits(to);
+  const conv = ensureConversation(phone);
+
+  // Salva o estágio e uma “janela” anti-reapresentação
+  conv.stage = String(stage || "").slice(0, 64);
+  conv.stageAt = Date.now();
+  conv.noReintroUntil = Date.now() + 5 * 60 * 1000; // 5 min sem reapresentação
+
+  // Cauda (fallback CTA) — SEM mudar seu tom/fluxo
+  const tail =
+    "\n\nSe quiser, posso **continuar o cancelamento**, **remarcar**, **agendar** ou **tirar uma dúvida**. É só me dizer.";
+
+  // Evita duplicar a cauda se já estiver na mensagem
+  let body = String(text || "");
+  const hasTail =
+    /continuar o cancelamento|remarcar|agendar|tirar uma dúvida/i.test(body);
+  if (!hasTail) body = body.replace(/\s+$/,"") + tail;
+
+  // Registramos a mensagem no histórico (mantendo seu padrão)
+  appendMessage(phone, "assistant", body);
+
+  // Dispara efetivamente
+  return await sendText({ to, text: body });
+}
+// ==== FIM do helper de estágio/fallback ====================================
 dotenv.config();
+const app = express();
+
 const app = express();
 app.set("trust proxy", 1);
 const PORT = process.env.PORT || 8080;
@@ -828,13 +866,15 @@ if (isPureGreeting) {
     convMem.cancelCtx = { phone: "", name: "", dateISO: null, timeHHMM: null, chosenEvent: null };
     convMem.updatedAt = Date.now();
 
-    await sendText({
+    await stageSend({
   to: from,
   text:
     "Vamos **remarcar**. Primeiro, preciso encontrar seu agendamento atual.\n" +
     "Por favor, me envie **Telefone** (DDD + número) **e/ou** **Nome completo**.\n" +
-    "Se você souber, **data e horário** também me ajudam a localizar rapidinho (ex.: 26/09 09:00)."
+    "Se você souber, **data e horário** também me ajudam a localizar rapidinho (ex.: 26/09 09:00).",
+  stage: "cancel:identify" // ainda estamos na etapa de localizar o agendamento a ser cancelado
 });
+
 return;
   }
 
@@ -845,11 +885,12 @@ return;
     convMem.updatedAt = Date.now();
 
     
-await sendText({
+await stageSend({
   to: from,
   text:
-    "Certo, vamos **cancelar**. Para eu localizar seu agendamento, me envie **Telefone** (DDD + número) **e/ou** **Nome completo**.\n" +
-    "Se você souber, **data e horário** também me ajudam a localizar (ex.: 26/09 09:00)."
+    "Certo, vamos **cancelar**. Para eu localizar seu agendamento, por favor me envie **Telefone** (DDD + número) **e/ou** **Nome completo**.\n" +
+    "Se você souber, **data e horário** também me ajudam a localizar (ex.: 26/09 09:00).",
+  stage: "cancel:identify"
 });
 return;
   }
@@ -1225,7 +1266,12 @@ try {
         convMem.slotCursor = { fromISO: new Date().toISOString(), page: 1 };
         convMem.updatedAt = Date.now();
       }
-      await sendText({ to: from, text: msg });
+      await stageSend({
+  to: from,
+  text: msg,
+  stage: "reschedule:list"
+});
+
     }
 
     return; // não deixa cair em outras regras
@@ -1255,10 +1301,12 @@ try {
         });
       } else {
         const linhas = weekdayOnly.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`).join("\n");
-        await sendText({
-          to: from,
-          text: "Aqui vão **mais opções**:\n" + linhas + '\n\nResponda com **opção N** ou informe **data e horário**.'
-        });
+        await stageSend({
+  to: from,
+  text: "Aqui vão **mais opções**:\n" + linhas + '\n\nResponda com **opção N** ou informe **data e horário**.',
+  stage: "schedule:list" // ou "reschedule:list" se estiver nesse fluxo
+});
+
         const convUpd = ensureConversation(from);
         convUpd.lastSlots = weekdayOnly;
         convUpd.slotCursor = { fromISO: nextFrom, page: (cursor.page || 1) + 1 };
@@ -1508,8 +1556,12 @@ if (dow === 6 || dow === 0) {
           `Claro, seguem as opções para **${ddmm}**:\n` +
           linhas.join("\n") +
           `\n\nResponda com **opção N** (ex.: "opção 3") ou digite **data e horário** (ex.: "24/09 14:00").`;
-        appendMessage(from, "assistant", msg);
-        await sendText({ to: from, text: msg });
+        await stageSend({
+  to: from,
+  text: msg,
+  stage: "schedule:list"
+});
+
       }
       return; // não deixa cair em outros blocos; evita travar o fluxo
     }
@@ -1674,6 +1726,21 @@ if (justBookedRecently) {
 }
 // Sempre que o paciente mudar de ideia (ex.: estava cancelando e quer remarcar), a IA deve acolher e redirecionar gentilmente SEM reiniciar a conversa.
 systemHints.push("Se o paciente mudar de intenção (agendar ↔ cancelar ↔ remarcar ↔ tirar dúvida), acolha e redirecione para o fluxo correto, sem reiniciar e sem repetir apresentação.");
+// ======= NOVO: honrar noReintroUntil e stage =======
+try {
+  const convNow = getConversation(from) || {};
+  if (convNow.noReintroUntil && Date.now() < convNow.noReintroUntil) {
+    systemHints.push("NÃO se reapresente sob hipótese alguma.");
+  }
+  if (convNow.stage) {
+    systemHints.push(
+      `Você está no contexto "${convNow.stage}". Responda de forma OBJETIVA dentro deste contexto. ` +
+      `No final da sua resposta, SEMPRE ofereça a continuidade do fluxo atual ou a opção de redirecionar ` +
+      `(continuar cancelamento, remarcar, agendar, tirar dúvida) sem reiniciar a conversa.`
+    );
+  }
+} catch {}
+// ======= FIM do NOVO =======
 
 const hintsBlock = systemHints.length
   ? `\n\n[HINTS (NÃO MOSTRAR AO PACIENTE): ${systemHints.join(" ")}]`
