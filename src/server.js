@@ -140,22 +140,89 @@ async function triggerIAFallback({ from, stage, userText }) {
   const phone = String(from);
   if (shouldThrottleFallback(phone, stage, userText)) return;
 
-  // Hints de etapa: não reiniciar conversa, sem lista numerada
-  const stageHints = [
-    "NÃO reinicie a conversa; continue do ponto atual.",
-    "NÃO liste opções numeradas; peça comandos: \"agendar consulta\", \"cancelar consulta\", \"reagendar consulta\", \"tirar dúvida\".",
-    `Contexto atual do fluxo: ${stage}.`
-  ].join(" ");
+  // ======== CAPTURA CONTEXTO ATUAL DA CONVERSA ========
+  const conv = ensureConversation(phone);
+  const mode = conv?.mode || null;          // "cancel" | null
+  const after = conv?.after || null;        // "schedule" | null (só quando é reagendar)
+  const cancelCtx = conv?.cancelCtx || {};  // { phone, name, dateISO, timeHHMM, chosenEvent, awaitingConfirm, confirmed, matchList }
 
-  const composed = (userText || "") +
-    `\n\n[HINTS (NÃO MOSTRAR AO PACIENTE): ${stageHints}]`;
+  // Deriva rótulos legíveis para a IA
+  const modeLabel =
+    mode === "cancel"
+      ? (after === "schedule" ? "REAGENDAMENTO (via cancelamento atual)" : "CANCELAMENTO")
+      : "AGENDAMENTO/TIRAR DÚVIDAS (fora do modo cancelamento)";
 
+  const awaitingConfirm = !!cancelCtx.awaitingConfirm;
+  const alreadyConfirmed = !!cancelCtx.confirmed;
+
+  // Quais dados já temos nesta etapa (ajuda a IA a não pedir o que já foi dado)
+  const known = {
+    nome: cancelCtx.name || conv.patientName || null,
+    telefone: cancelCtx.phone || conv.lastKnownPhone || null,
+    dataISO: cancelCtx.dateISO || null,
+    hora: cancelCtx.timeHHMM || null,
+    eventoEscolhido: !!cancelCtx.chosenEvent,
+    aguardandoConfirmacao: awaitingConfirm,
+    confirmado: alreadyConfirmed,
+    proximoPassoSugerido:
+      awaitingConfirm ? "Confirmar cancelamento (SIM/NÃO)" :
+      (mode === "cancel"
+        ? (cancelCtx.chosenEvent
+            ? (alreadyConfirmed ? "Executar cancelamento no calendário" : "Pedir confirmação para cancelar")
+            : "Localizar evento do paciente (por telefone/nome; data/hora são filtros)")
+        : "Continuar agendamento normal")
+  };
+
+  // Quais campos faltam (para IA orientar sem bater cabeça)
+  const missing = [];
+  if (mode === "cancel") {
+    if (!cancelCtx.phone && !cancelCtx.name) missing.push("Telefone (DDD+número) e/ou Nome completo");
+    if (cancelCtx.phone || cancelCtx.name) {
+      // Identidade já presente, talvez falte data/hora para refinar
+      if (!cancelCtx.dateISO) missing.push("Data do agendamento (ex.: 26/09)");
+      if (!cancelCtx.timeHHMM) missing.push("Horário do agendamento (ex.: 09:00)");
+    }
+    if (cancelCtx.chosenEvent && !awaitingConfirm && !alreadyConfirmed) {
+      missing.push("Confirmação SIM/NÃO para cancelar");
+    }
+  }
+
+  // Instruções **estritas** para a Cristina (NÃO mostrar ao paciente)
+  const hiddenGuidelines = [
+    "Não reinicie a conversa; continue exatamente do ponto atual.",
+    "Não apresente opções numeradas. Prefira comandos: \"agendar consulta\", \"cancelar consulta\", \"reagendar consulta\", \"tirar dúvida\".",
+    "Se o paciente mudou de ideia, acolha e redirecione ao fluxo apropriado, SEM pedir dados repetidos.",
+    "Se o modo for CANCELAMENTO e estiver aguardando confirmação, pergunte objetivamente por **sim** ou **não**.",
+    "Se faltar identidade (telefone/nome), oriente a enviar **Telefone (DDD+número) e/ou Nome completo**. Se já houver identidade, evite pedir de novo.",
+    "Se for REAGENDAMENTO (after=schedule), ao concluir o cancelamento ofereça opções para agendar novamente, mas só depois de confirmado o cancelamento.",
+    "Nunca prometa horários se o sistema não listou. Se o paciente pedir horários, peça uma data (ex.: 24/09) ou diga que posso listar quando ele pedir."
+  ];
+
+  // Monta um CONTEXTO estruturado para a IA (não mostrado ao paciente)
+  const hiddenContext = {
+    etapa: stage,              // string passada por quem chamou
+    modo: modeLabel,           // rótulo amigável
+    flags: { awaitingConfirm, alreadyConfirmed, after },
+    conhecidos: known,
+    faltantes: missing
+  };
+
+  // Mensagem composta para a IA
+  const composed =
+    (userText || "") +
+    "\n\n[CONTEXT (DO NOT SHOW TO USER)] " +
+    JSON.stringify(hiddenContext, null, 0) +
+    "\n[GUIDELINES (DO NOT SHOW TO USER)] " +
+    hiddenGuidelines.join(" ");
+
+  // ======== CHAMA IA E ENVIA ========
   const answer = await askCristina({ userText: composed, userPhone: phone });
   if (answer && answer.trim()) {
     appendMessage(phone, "assistant", answer);
-    await sendText({ to: phone, text: answer }); // respeita dedupe/cooldown do sendText
+    await sendText({ to: phone, text: answer }); // respeita dedupe/cooldown
   }
 
+  // Anti-loop / marcação
   const convNow = ensureConversation(phone);
   convNow.lastFallbackAt    = Date.now();
   convNow.lastFallbackStage = stage;
@@ -1018,9 +1085,10 @@ if (ctx.awaitingConfirm) {
   } else {
     await triggerIAFallback({
   from,
-  stage: "cancelamento: aguardando confirmação; paciente respondeu outra coisa",
+  stage: "cancelamento: evento identificado; aguardando resposta SIM ou NÃO para confirmar cancelamento",
   userText
 });
+
 return;
 
   }
@@ -1089,9 +1157,10 @@ if (!ctx.phone && !ctx.name) {
   // o paciente mandou apenas data/hora ou nada útil → peça identidade
  await triggerIAFallback({
   from,
-  stage: "cancelamento: coletando identidade (telefone/nome); paciente desviou",
+  stage: "cancelamento: paciente desviou antes de informar telefone/nome; aguardando identificação para buscar o agendamento",
   userText
 });
+
 return;
 
 }
