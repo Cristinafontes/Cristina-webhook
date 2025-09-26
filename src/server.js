@@ -161,10 +161,9 @@ async function stageSend({ to, text, stage }) {
 // ==== FIM do helper de estágio/fallback ====================================
 dotenv.config();
 const app = express();
-
-const app = express();
 app.set("trust proxy", 1);
 const PORT = process.env.PORT || 8080;
+
 
 
 
