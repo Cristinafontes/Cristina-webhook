@@ -940,10 +940,15 @@ function eventMatchesIdentity(ev, { phone, name }) {
   if (name) {
     const target = normalizeStrLite(name);
     const evNames = extractNamesFromEvent(ev);
-    const okName = evNames.some(n => n === target);
+
+    // Casa exato OU por inclusão (parcial), para tolerar variações.
+    const okName = evNames.some(n =>
+      n === target || n.includes(target) || target.includes(n)
+    );
+
     if (!okName) return false;
   }
-  return true; // passou pelos filtros informados
+  return true;
 }
 // === Sidecar da IA durante o CANCELAMENTO (não reinicia conversa) ===
 async function aiAssistCancel({ from, userText }) {
@@ -1066,7 +1071,10 @@ if (maybePhone) {
 // nome (reaproveita seu extrator robusto)
 const candidateNameRaw = extractNameFromText?.(userText);
 const candidateName = (candidateNameRaw || "").trim();
-if (candidateName) {
+
+// Aceita só "nome de verdade": tem espaço (nome + sobrenome) OU ≥ 4 letras.
+// Evita confundir "Sim", "Ok", etc. com nome.
+if (candidateName && (/\s/.test(candidateName) || candidateName.replace(/\s+/g, "").length >= 4)) {
   ctx.name = candidateName;
 
   // *** reset defensivo ao trocar nome ***
@@ -1077,7 +1085,6 @@ if (candidateName) {
   ctx.awaitingConfirm = false;
   ctx.confirmed = false;
 }
-
     // 2) Tentar extrair data/hora (aceita "26/09", "26/09 09:00", "26-09 9h")
     const mDate = userText.match(/(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?/);
     const mTime = userText.match(/\b(\d{1,2})(?::|h)(\d{2})\b/);
