@@ -31,6 +31,10 @@ const WHATSAPP_STRIP_MARKDOWN = String(process.env.WHATSAPP_STRIP_MARKDOWN || "t
 const _lastSendAtByPhone = new Map(); // phone -> timestamp
 const _lastPayloadByPhone = new Map(); // phone -> { text, at }
 
+// Limites extra (anti-ban): contagem diária por contato e trilhas de "último contato do usuário"
+const _dailyCountByPhone = new Map(); // phone -> { dayKey:'YYYY-MM-DD', count:number }
+function _getDayKey(d = new Date()) { return d.toISOString().slice(0,10); }
+
 function _sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function _randInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
 
@@ -60,6 +64,36 @@ async function sendText({ to, text }) {
   // remove *negrito* e ***variações*** sem quebrar o texto
   msg = msg.replace(/\*{1,3}([^*]+)\*{1,3}/g, "$1");
 }
+// === ANTI-BAN (camadas adicionais) =======================================
+// 0. Hard cap diário por contato (default: 30 msgs/dia)
+try {
+  const DAY_CAP = parseInt(process.env.MAX_MSGS_PER_CONTACT_PER_DAY || "30", 10);
+  const dayKey = _getDayKey();
+  let rec = _dailyCountByPhone.get(phone) || { dayKey, count: 0 };
+  if (rec.dayKey !== dayKey) rec = { dayKey, count: 0 }; // troca de dia: zera
+
+  if (rec.count >= DAY_CAP) {
+    console.log("[sendText] daily-cap: bloqueado para", phone);
+    return { skipped: "daily-cap" };
+  }
+  _dailyCountByPhone.set(phone, rec);
+} catch {}
+
+// 1. Bloqueio de 'cold outbound' (evita iniciar conversa se o usuário não falou recentemente)
+//    Só libera se: (a) houve msg do usuário nos últimos X min, OU (b) ALLOW_COLD_OUTBOUND=true
+try {
+  const allowCold = String(process.env.ALLOW_COLD_OUTBOUND || "false").toLowerCase() === "true";
+  const maxSilenceMs = parseInt(process.env.MAX_SILENCE_BEFORE_OUTBOUND_MS || "600000", 10); // 10min
+  const convSnap2 = getConversation(phone);
+  const lastUserAt = convSnap2?.lastUserAt || 0;
+  const silence = Date.now() - lastUserAt;
+
+  if (!allowCold && (!lastUserAt || silence > maxSilenceMs)) {
+    console.log("[sendText] cold-outbound: bloqueado para", phone, "silence(ms)=", silence);
+    return { skipped: "cold-outbound" };
+  }
+} catch {}
+// ========================================================================
 
   // 1) Deduplicação: ignora se mesma mensagem foi enviada nos últimos X segundos
   try {
@@ -113,6 +147,18 @@ async function sendText({ to, text }) {
   } else {
     out = await sendWhatsAppText({ to, text: msg });
   }
+// === Telemetria pós-envio (só se não foi skip) ===========================
+try {
+  const dayKey = _getDayKey();
+  const rec = _dailyCountByPhone.get(phone) || { dayKey, count: 0 };
+  if (rec.dayKey !== dayKey) { rec.dayKey = dayKey; rec.count = 0; }
+  rec.count += 1;
+  _dailyCountByPhone.set(phone, rec);
+  // marca o último envio da assistente
+  const c = ensureConversation(phone);
+  c.lastAssistantAt = Date.now();
+} catch {}
+// ========================================================================
 
   // 6) Marcações para as próximas proteções
   _lastSendAtByPhone.set(phone, Date.now());
@@ -790,6 +836,9 @@ async function handleInbound(req, res) {
     }
 
     const trimmed = (userText || "").trim().toLowerCase();
+    // Marca o horário da última mensagem recebida do usuário (usado no anti "cold-outbound")
+try { ensureConversation(from).lastUserAt = Date.now(); } catch {}
+
   // === MEMÓRIA DE IDENTIDADE (nome/telefone) ===
 {
   const conv = ensureConversation(from);
