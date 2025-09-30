@@ -1143,20 +1143,23 @@ if (!ctx.phone && !ctx.name) {
 
 let matches = [];
 try {
-  const phoneForLookup = ctx.phone || (normalizePhoneForLookup(conversations.get(from)?.lastKnownPhone) || "");
+   // Use telefone "fallback" só para ampliar a BUSCA;
+  // no filtro final, só exigimos telefone se o paciente informou explicitamente.
+  const phoneForFetch = ctx.phone || (normalizePhoneForLookup(conversations.get(from)?.lastKnownPhone) || "");
   const nameForLookup  = ctx.name  || "";
 
   // 4.1) Busca ampla por paciente no período
   const rawEvents = await findPatientEvents({
-    phone: phoneForLookup,   // mesmo que a função ignore, vamos refinar localmente
+    phone: phoneForFetch,
     name:  nameForLookup,
     daysBack: 180,
     daysAhead: 365
   });
 
   // 4.2) Filtra PRIMEIRO pela identidade (telefone/nome)
-  const idFilter = { phone: phoneForLookup, name: nameForLookup };
+  const idFilter = { phone: (ctx.phone || ""), name: nameForLookup };
   let filtered = rawEvents.filter(ev => eventMatchesIdentity(ev, idFilter));
+
 
   // 4.3) Se veio data/hora, aplicar como filtros ADICIONAIS
   if (ctx.dateISO) {
