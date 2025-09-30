@@ -945,6 +945,56 @@ function eventMatchesIdentity(ev, { phone, name }) {
   }
   return true; // passou pelos filtros informados
 }
+// === Sidecar da IA durante o CANCELAMENTO (não reinicia conversa) ===
+async function aiAssistCancel({ from, userText }) {
+  const conv = getConversation(from) || ensureConversation(from);
+  const ctx  = conv.cancelCtx || {};
+  // Monta um prompt curto e CONTEXTUALIZADO com a etapa do cancelamento
+  const stageHints = [
+    ctx.awaitingConfirm ? "ETAPA: aguardando confirmação 'sim' ou 'não' do cancelamento." : null,
+    (!ctx.phone && !ctx.name) ? "ETAPA: aguardando identidade (Telefone e/ou Nome)." : null,
+    (ctx.phone || ctx.name) && !ctx.chosenEvent ? "ETAPA: localizando/selecionando o agendamento correto." : null,
+    (ctx.confirmed) ? "ETAPA: cancelamento confirmado; preparando execução." : null
+  ].filter(Boolean).join(" ");
+
+  // Hints invisíveis pra IA (sem reapresentação e sem reiniciar a conversa)
+  const invisibleHints =
+    "NÃO se reapresente. Responda acolhedoramente e direto ao ponto, com tom da clínica. " +
+    "Se o paciente quiser MUDAR O FLUXO (ex.: reagendar), acolha e diga explicitamente o que faremos em seguida. " +
+    "Finalize sempre com uma frase que devolva o paciente para a etapa atual (ou explique a mudança).";
+
+  // Renderiza histórico recente no formato já usado no arquivo
+  const lines = (conv.messages || []).map(m => m.role === "user"
+    ? `Paciente: ${m.content}`
+    : `Cristina: ${m.content}`
+  );
+  lines.push(`Paciente: ${userText}`);
+
+  let composed =
+    `Contexto de conversa (mais recente por último):\n` +
+    lines.join("\n") +
+    `\n\n[ETAPA DO CANCELAMENTO] ${stageHints || "ETAPA: fluxo de cancelamento em andamento."}\n` +
+    `[HINTS (NÃO MOSTRAR AO PACIENTE)]: ${invisibleHints}`;
+
+  // Chama a IA reaproveitando sua função existente
+  const answer = await askCristina({ userText: composed, userPhone: String(from) });
+
+  // Memória + envio
+  appendMessage(from, "user", userText);
+  if (answer) {
+    appendMessage(from, "assistant", answer);
+    await sendText({ to: from, text: answer });
+
+    // Se a IA detectar intenção de remarcar, sinalizamos para o pós-cancelamento
+    try {
+      const wantsReschedule = /\b(reagend|remarc|mudar\s*hor[áa]rio|adiar)\b/i.test(answer);
+      if (wantsReschedule) {
+        const c = ensureConversation(from);
+        if (c?.mode === "cancel") c.after = "schedule";
+      }
+    } catch {}
+  }
+}
 
 // === MODO CANCELAMENTO: coletar dados (telefone/nome/data) e cancelar com base em 1+ campos ===
 {
@@ -953,8 +1003,9 @@ function eventMatchesIdentity(ev, { phone, name }) {
     const ctx = convMem.cancelCtx || (convMem.cancelCtx = { phone: "", name: "", dateISO: null, timeHHMM: null, chosenEvent: null });
     // Se estamos aguardando confirmação do cancelamento:
 if (ctx.awaitingConfirm) {
-  const yes = /\b(sim|pode|confirmo|confirmar|ok|isso|pode cancelar)\b/i.test(userText || "");
-  const no  = /\b(n[aã]o|negativo|melhor n[aã]o|cancelar n[aã]o)\b/i.test(userText || "");
+    const yes = /\b(sim|pode|confirmo|confirmar|ok|isso|pode\s*cancelar|pode\s*sim|tudo\s*certo)\b/i.test(userText || "");
+  const no  = /\b(n[aã]o|negativo|melhor\s*n[aã]o|cancelar\s*n[aã]o|pera|espera|a?guarda|deixa\s*quieto)\b/i.test(userText || "");
+
 
   if (yes && ctx.chosenEvent) {
   // confirmou: destrava confirmação e marca flag permanente
@@ -1041,6 +1092,31 @@ if (candidateName) {
       const mi = String(mTime[2]).padStart(2, "0");
       ctx.timeHHMM = `${hh}:${mi}`;
     }
+// === OFF-SCRIPT GUARD (chama IA se a resposta não é o que o fluxo espera) ===
+{
+  const raw = String(userText || "");
+
+  const saidYes = /\b(sim|pode|confirmo|confirmar|ok|isso|pode cancelar)\b/i.test(raw);
+  const saidNo  = /\b(n[aã]o|negativo|melhor n[aã]o|cancelar n[aã]o)\b/i.test(raw);
+  const pickedNumberOnly = /^\s*\d{1,2}\s*$/.test(raw); // "1", "2", etc. (lista de eventos)
+  const gavePhone = Boolean(maybePhone);
+  const gaveName  = Boolean(candidateName);
+  const gaveDateOrTime = Boolean(mDate || mTime);
+
+  const offScript =
+    !saidYes &&
+    !saidNo &&
+    !pickedNumberOnly &&
+    !gavePhone &&
+    !gaveName &&
+    !gaveDateOrTime;
+
+  if (offScript) {
+    // Deixa a IA atender e devolver o paciente para a etapa correta do cancelamento
+    await aiAssistCancel({ from, userText });
+    return; // encerra este turno sem quebrar o modo "cancel"
+  }
+}
 
     // 3) GATE: só seguimos se tiver TELEFONE ou NOME; data/hora sozinha não basta
 if (!ctx.phone && !ctx.name) {
