@@ -1360,6 +1360,27 @@ try {
     const cancelText = `Pronto! Sua consulta com a Dra. Jenifer está cancelada para o dia ${dd}/${yy} ${hhmm}.`;
 
     await sendText({ to: from, text: cancelText });
+// --- PREFILL para reagendamento após cancelamento ---
+try {
+  const ev = ctx?.chosenEvent || {};
+  const convPrefill = ensureConversation(from);
+
+  // Telefones e nomes extraídos do evento (helpers já existem no arquivo)
+  const evPhones = extractPhonesFromEvent?.(ev) || [];
+  const evNames  = extractNamesFromEvent?.(ev)  || [];
+
+  if (evNames.length && !convPrefill.patientName) {
+    convPrefill.patientName = toTitleCase(evNames[0]);
+  }
+  if (evPhones.length) {
+    convPrefill.lastKnownPhone = normalizePhoneForLookup(evPhones[0]);
+  }
+
+  // Modalidade gravada como “nota” no histórico para a IA reaproveitar
+  const prevMod = ev?.extendedProperties?.private?.modality;
+  if (prevMod) appendMessage(from, "assistant", `Modalidade: ${prevMod}`);
+} catch {}
+// --- FIM PREFILL ---
 
     // 9) Se era remarcar, oferecer horários (com "opção N")
     const shouldReschedule = convMem.after === "schedule";
@@ -1387,7 +1408,19 @@ try {
         convMem.slotCursor = { fromISO: new Date().toISOString(), page: 1 };
         convMem.updatedAt = Date.now();
       }
-      await sendText({ to: from, text: msg });
+      // registra no histórico e envia a lista para permitir “opção N” e “N”
+appendMessage(from, "assistant", msg);
+await sendText({ to: from, text: msg });
+
+// evita a IA relistar horários logo em seguida (apenas neste turno)
+const c = ensureConversation(from);
+c.justPickedOption = true;
+// libera a autolista novamente após 1,5s (não mexe no comportamento futuro)
+setTimeout(() => {
+  const c2 = getConversation(from);
+  if (c2) c2.justPickedOption = false;
+}, 1500);
+
     }
 
     return; // não deixa cair em outras regras
