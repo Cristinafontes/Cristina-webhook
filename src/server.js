@@ -30,6 +30,24 @@ const WHATSAPP_STRIP_MARKDOWN = String(process.env.WHATSAPP_STRIP_MARKDOWN || "t
 // Versão "segura": jitter, cooldown por contato e deduplicação
 const _lastSendAtByPhone = new Map(); // phone -> timestamp
 const _lastPayloadByPhone = new Map(); // phone -> { text, at }
+// Anti-duplicação de entrada (texto do usuário)
+const _lastInboundByPhone = new Map(); // phone -> { textNorm, at }
+function _normInboundText(s) {
+  return String(s || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+// Contador diário por contato
+const _dailyCountByPhone = new Map(); // key="YYYYMMDD|phone" -> count
+function _dayKey() {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}${mm}${dd}`;
+}
+function _getDaily(key) { return _dailyCountByPhone.get(key) || 0; }
+function _incDaily(key) { _dailyCountByPhone.set(key, _getDaily(key) + 1); }
+
 
 function _sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function _randInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
@@ -50,6 +68,24 @@ async function sendText({ to, text }) {
   // mantém compatibilidade com o resto do código
   const provider = (process.env.WHATSAPP_PROVIDER || "GUPSHUP").toUpperCase();
   const phone = (to || "").toString().replace(/\D/g, "");
+
+    // --- Limite diário por contato (anti-rajada agressiva) ---
+  try {
+    const MAX_PER_DAY = parseInt(process.env.MAX_MSGS_PER_CONTACT_PER_DAY || "20", 10);
+    const key = `${_dayKey()}|${phone}`;
+    const count = _getDaily(key);
+
+    // Permite resposta se o usuário falou há ≤60s, mesmo após o limite
+    const conv = conversations.get(phone);
+    const lastUserAt = conv?.lastUserAt || 0;
+    const userIsRecent = Date.now() - lastUserAt <= 60_000;
+
+    if (count >= MAX_PER_DAY && !userIsRecent) {
+      console.log("[sendText] daily-cap: segurando envio para", phone);
+      return { skipped: "daily-cap" };
+    }
+  } catch {}
+
     // 0) formata mensagem (nome + tira *...* se quiser)
     const raw = String(text || "");
   const convSnap = getConversation(phone);
@@ -71,6 +107,19 @@ async function sendText({ to, text }) {
     }
   } catch {}
 
+  // 1.5) Evita iniciar outbound depois de muito silêncio do paciente
+  try {
+    const MAX_SILENCE = parseInt(process.env.MAX_SILENCE_BEFORE_OUTBOUND_MS || "300000", 10); // 5min
+    const conv = conversations.get(phone);
+    const lastUserAt = conv?.lastUserAt || 0;
+    // Se o paciente não falou recentemente e não há pergunta pendente, segure
+    if (lastUserAt && Date.now() - lastUserAt > MAX_SILENCE) {
+      console.log("[sendText] long-silence: evitando outbound frio para", phone);
+      return { skipped: "long-silence" };
+    }
+  } catch {}
+
+  
   // 2) Quiet hours para primeiro contato frio (não bloqueia respostas)
   // Se QUIET_ALLOW_REPLY=true, liberamos quando houve mensagem do usuário agora.
   try {
@@ -117,6 +166,8 @@ async function sendText({ to, text }) {
   // 6) Marcações para as próximas proteções
   _lastSendAtByPhone.set(phone, Date.now());
   _lastPayloadByPhone.set(phone, { text: msg, at: Date.now() });
+  // contabiliza envio do dia
+  try { _incDaily(`${_dayKey()}|${phone}`); } catch {}
 
   return out;
 }
@@ -737,6 +788,7 @@ function trimToLastN(arr, n) {
 function appendMessage(phone, role, content) {
   const conv = ensureConversation(phone);
   conv.messages.push({ role, content: String(content || "").slice(0, 4000) });
+  if (role === "user") conv.lastUserAt = nowMs();
   conv.messages = trimToLastN(conv.messages, MEMORY_MAX_MESSAGES);
   conv.updatedAt = nowMs();
 }
@@ -777,6 +829,22 @@ async function handleInbound(req, res) {
 
     // Extrai texto
     let userText = "";
+
+    // --- Anti-duplicação de entrada (antes de ler msgType) ---
+{
+  const now = Date.now();
+  const last = _lastInboundByPhone.get(from);
+  const bodyForDedupe =
+    (p?.payload?.text ?? p?.payload?.title ?? p?.payload?.postbackText ?? "") + "";
+  const textNorm = _normInboundText(bodyForDedupe);
+  const WINDOW_MS = 10_000; // 10s
+  if (last && last.textNorm === textNorm && now - last.at < WINDOW_MS) {
+    console.log("[inbound dedupe] repetido ignorado para", from);
+    return;
+  }
+  _lastInboundByPhone.set(from, { textNorm, at: now });
+}
+
     if (msgType === "text") {
       userText = p?.payload?.text || "";
     } else if (msgType === "button_reply" || msgType === "list_reply") {
