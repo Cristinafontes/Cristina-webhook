@@ -1171,12 +1171,20 @@ if (candidateName && (/\s/.test(candidateName) || candidateName.replace(/\s+/g, 
 {
   const raw = String(userText || "");
 
-  const saidYes = /\b(sim|pode|confirmo|confirmar|ok|isso|pode cancelar)\b/i.test(raw);
+    const saidYes = /\b(sim|pode|confirmo|confirmar|ok|isso|pode cancelar)\b/i.test(raw);
   const saidNo  = /\b(n[aã]o|negativo|melhor n[aã]o|cancelar n[aã]o)\b/i.test(raw);
-  const pickedNumberOnly = /^\s*\d{1,2}\s*$/.test(raw); // "1", "2", etc. (lista de eventos)
+
+  // Captura respostas numéricas simples, com "opção", "opcao", "escolho", etc.
+  const pickedNumberOnly =
+    /^\s*\d{1,2}\s*$/.test(raw) ||                       // Ex.: "2"
+    /^\s*op[cç][aã]o\s*\d{1,2}\s*$/.test(raw) ||        // Ex.: "opção 2"
+    /^\s*escolho\s*\d{1,2}\s*$/.test(raw) ||            // Ex.: "escolho 2"
+    /^\s*(?:op[cç][aã]o|opcao)\s*\d{1,2}[).]?\s*$/.test(raw); // Ex.: "opcao 2)" ou "opção 3."
+
   const gavePhone = Boolean(maybePhone);
   const gaveName  = Boolean(candidateName);
   const gaveDateOrTime = Boolean(mDate || mTime);
+
 
   const offScript =
     !saidYes &&
@@ -1478,6 +1486,61 @@ convMem.lastSlots = [];
       // não limpamos lastSlots aqui (mantém robusto se o provedor repetir evento)
     }
   }
+}
+// === DATETIME LIVRE: "quarta dia 01/10 11:00", "qua 01/10 11:00", "01/10 11:00" ===
+try {
+  // não roubar o foco quando ainda estamos no modo de cancelamento
+  if ((getConversation(from)?.mode || null) !== "cancel") {
+    const raw = String(userText || "");
+    const lower = raw
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "");
+
+    // 1) Padrão: DD/MM[(/YYYY)] + HH:MM  (aceita "11h00" também)
+    let m = lower.match(/\b(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?\s+(\d{1,2})(?::|h)(\d{2})\b/);
+
+    // 2) Padrão: (quarta|qua|seg|...) ["dia"] DD/MM[(/YYYY)] HH:MM
+    if (!m) {
+      const WK = "(?:segunda|terca|terça|quarta|quinta|sexta|sabado|sábado|domingo|seg|ter|qua|qui|sex|sab|dom)";
+      const re = new RegExp(
+        `\\b${WK}\\b(?:\\s*feira)?(?:\\s*d[ia]{1,2})?\\s*(\\d{1,2})[\\/\\-](\\d{1,2})(?:[\\/\\-](\\d{2,4}))?\\s*(\\d{1,2})(?::|h)(\\d{2})\\b`,
+        "i"
+      );
+      m = lower.match(re);
+    }
+
+    if (m) {
+      const dd = String(m[1]).padStart(2, "0");
+      const mm = String(m[2]).padStart(2, "0");
+      const yyyy =
+        m[3] ? (String(m[3]).length === 2 ? 2000 + Number(m[3]) : Number(m[3])) : new Date().getFullYear();
+      const hh = String(m[4]).padStart(2, "0");
+      const mi = String(m[5]).padStart(2, "0");
+
+      // validação simples: não permitir passado
+      const whenISO = `${yyyy}-${mm}-${dd}T${hh}:${mi}:00`;
+      const when = new Date(whenISO);
+      if (Number.isNaN(when.getTime())) {
+        // deixa seguir o fluxo normal (IA/relativos) se não der pra parsear
+      } else if (when.getTime() < Date.now()) {
+        await sendText({
+          to: from,
+          text:
+            "Datas/horários no passado não podem ser agendados. Diga um **dia e horário a partir de agora** (ex.: 01/10 11:00) ou peça **opções**."
+        });
+        return;
+      } else {
+        // Normaliza para o formato que o fluxo já entende
+        userText = `Quero agendar nesse horário: ${dd}/${mm} ${hh}:${mi}`;
+        const conv = ensureConversation(from);
+        conv.justPickedOption = true; // evita relistar automaticamente neste turno
+        // (não damos return: deixamos o fluxo de agendamento existente continuar)
+      }
+    }
+  }
+} catch (e) {
+  console.error("[free-datetime-parse] erro:", e?.message || e);
 }
 
     // === RELATIVOS: hoje / amanhã / depois de amanhã / ontem ===
