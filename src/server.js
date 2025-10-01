@@ -1411,6 +1411,14 @@ try {
       // registra no histórico e envia a lista para permitir “opção N” e “N”
 appendMessage(from, "assistant", msg);
 await sendText({ to: from, text: msg });
+// === Reagendamento: exigir confirmação completa antes de criar o novo evento ===
+try {
+  const c = ensureConversation(from);
+  c.requireProfileConfirm = true;  // sinaliza que deve rodar a etapa de confirmação final
+  c.pendingBooking = null;         // limpa qualquer rascunho anterior
+  c.awaitingProfile = false;
+  c.updatedAt = Date.now();
+} catch {}
 
 // evita a IA relistar horários logo em seguida (apenas neste turno)
 const c = ensureConversation(from);
@@ -2131,7 +2139,52 @@ const location =
   modality === "Telemedicina"
     ? "Telemedicina (link será enviado)"
     : (process.env.CLINIC_ADDRESS || "Clínica");
-            
+    // === Reagendamento com confirmação completa (reusa o mesmo passo do agendamento) ===
+const convForConfirm = ensureConversation(from);
+
+// Se viemos do fluxo de reagendamento e ainda não passamos pela ficha de confirmação,
+// em vez de criar agora, pedimos a confirmação final e guardamos o rascunho.
+if (convForConfirm?.requireProfileConfirm && !convForConfirm?.awaitingProfile) {
+  convForConfirm.pendingBooking = {
+    summary,
+    description,
+    startISO,
+    endISO,
+    modality,
+    phoneFormatted,
+    name
+  };
+  convForConfirm.awaitingProfile = true;
+  convForConfirm.updatedAt = Date.now();
+
+  // Monte a mesma mensagem de confirmação que você já usa no agendamento “normal”.
+  // (A IA já sabe esse formato; aqui só garantimos que ela será exibida antes de criar.)
+  const modalityLabel = modality === "tele" ? "Telemedicina (link será enviado)" : (process.env.CLINIC_ADDRESS || "Clínica");
+  const dayLabel = new Date(startISO).toLocaleDateString("pt-BR");
+  const hourLabel = new Date(startISO).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+
+  const review =
+    `Obrigado${name ? ", " + name : ""}! Agora, só preciso confirmar algumas informações finais:\n` +
+    `1. Nome completo: ${name || "Paciente (WhatsApp)"}\n` +
+    `2. Idade: \n` +
+    `3. Telefone com DDD: ${phoneFormatted || ""}\n` +
+    `4. Motivo da consulta: \n` +
+    `5. Modalidade: ${modality === "tele" ? "Telemedicina" : "Presencial"}\n\n` +
+    `Posso agendar sua consulta para o dia ${dayLabel}, às ${hourLabel}, ${modalityLabel}?`;
+
+  await sendText({ to: from, text: review });
+  return; // <- interrompe a criação agora; aguardará o "pode/confirmo" do paciente
+}
+
+// Se o paciente respondeu “pode/confirmo” DEPOIS da ficha, criamos usando o rascunho salvo.
+if (convForConfirm?.requireProfileConfirm && convForConfirm?.awaitingProfile && convForConfirm?.pendingBooking) {
+  ({ summary, description, startISO, endISO, modality, phoneFormatted, name } = convForConfirm.pendingBooking);
+  convForConfirm.awaitingProfile = false;
+  convForConfirm.pendingBooking = null;
+  convForConfirm.requireProfileConfirm = false;
+  convForConfirm.updatedAt = Date.now();
+}
+        
             // === CHECA CONFLITO NO CALENDÁRIO ANTES DE CRIAR ===
 const { busy, conflicts } = await isSlotBlockedOrBusy({ startISO, endISO });
 if (busy) {
