@@ -379,6 +379,20 @@ function extractPhoneFromText(text) {
   const has55 = /^\+?55/.test(m[0]);
   return has55 ? ("55" + onlyDigits.replace(/^55/, "")) : onlyDigits;
 }
+// Extrai "idade" do texto (aceita "idade: 34", "tenho 34 anos", "34 anos")
+function extractAgeFromText(text) {
+  if (!text) return null;
+  const t = String(text).toLowerCase();
+  // "idade: 34" OU "idade - 34"
+  let m = t.match(/\bidade\s*[:\-]\s*(\d{1,3})\b/);
+  if (m) return Math.min(120, Math.max(0, parseInt(m[1], 10)));
+
+  // "tenho 34 anos", "34 anos"
+  m = t.match(/\b(?:tenho\s*)?(\d{1,3})\s*anos?\b/);
+  if (m) return Math.min(120, Math.max(0, parseInt(m[1], 10)));
+
+  return null;
+}
 
 // Lê um nome a partir de texto livre (com ou sem rótulo "Nome" / "Nome completo")
 // Helpers para nome
@@ -1488,9 +1502,36 @@ try {
       const ddmmhhmm = `${fmt.day}/${fmt.month} ${fmt.hour}:${fmt.minute}`;
       userText = `Quero agendar nesse horário: ${ddmmhhmm}`;
       const convFlag = ensureConversation(from);
-convFlag.justPickedOption = true; // evita autolista no mesmo turno
+convFlag.justPickedOption = true; 
+      // --- PREFILL para pré-confirmação do reagendamento ---
+try {
+  const convPref = ensureConversation(from);
+  const picked = extractPatientInfo({ payload: p, phone: from, conversation: convPref }) || {};
+  const ageFromHist = extractAgeFromText(
+    ((convPref.messages || []).map(m => m.content).join("\n")) + "\n" + (userText || "")
+  );
+
+  convPref.scheduleCtx = {
+    // herdado se já existia
+    ...(convPref.scheduleCtx || {}),
+    // últimos confiáveis
+    name: picked.name,
+    phoneFormatted: picked.phoneFormatted,
+    reason: picked.reason,
+    modality: picked.modality,
+    age: ageFromHist || (convPref.scheduleCtx && convPref.scheduleCtx.age) || null,
+    // guarda slot escolhido para confirmar depois
+    pickedSlotISO: chosen.startISO,
+    pickedSlotLabel: `${fmt.day}/${fmt.month} ${fmt.hour}:${fmt.minute}`
+  };
+} catch {}
+// --- FIM PREFILL ---
+
+      // evita autolista no mesmo turno
   // evita relistar/repensar a mesma página de opções no próximo turno
-  const convUpd = ensureConversation(from);
+  
+      
+      const convUpd = ensureConversation(from);
   convUpd.lastSlots = [];
 
       // segue o fluxo normal (sem return)
@@ -2080,91 +2121,75 @@ try {
     // ======== FIM DO DISPARO DE CANCELAMENTO ========
 // ======== SÓ CRIA EVENTO SE A SECRETÁRIA CONFIRMAR NESSE FORMATO ========
     // "Pronto! Sua consulta com a Dra. Jenifer está agendada para o dia 30/08/25, horário 14:00."
-    const confirmRegex =
-      /pronto!\s*sua\s+consulta\s+com\s+a\s+dra\.?\s+jenifer\s+est[aá]\s+agendada\s+para\s+o\s+dia\s+(\d{1,2})\/(\d{1,2})\/\d{2}\s*,?\s*hor[áa]rio\s+(\d{1,2}:\d{2}|\d{1,2}h)/i;
+// ======== PRÉ-CONFIRMAÇÃO ANTES DE AGENDAR ========
+// Detecção da frase de confirmação da Cristina (mantém compatibilidade)
+const confirmRegex =
+  /pronto!\s*sua\s+consulta\s+com\s+a\s+dra\.?\s+jenifer\s+est[aá]\s+agendada\s+para\s+o\s+dia\s+(\d{1,2})\/(\d{1,2})\/\d{2}\s*,?\s*hor[áa]rio\s+(\d{1,2}:\d{2}|\d{1,2}h)/i;
 
-    if (answer) {
-      const m = answer.match(confirmRegex);
-      if (m) {
-        try {
-          const dd = m[1].padStart(2, "0");
-          const mm = m[2].padStart(2, "0");
-          let hhmm = m[3];
+if (answer && confirmRegex.test(answer)) {
+  const convNow = ensureConversation(from);
+  const m = answer.match(confirmRegex);
+  // dd, mm e hh:mm que a IA "confirmou"
+  const dd = String(m[1]).padStart(2, "0");
+  const mm = String(m[2]).padStart(2, "0");
+  const hhmm = (m[3] || "").replace(/h$/, ":00");
 
-          // Normaliza "14h" -> "14:00"
-          if (/^\d{1,2}h$/i.test(hhmm)) {
-            hhmm = hhmm.replace(/h$/i, ":00");
-          }
+  // Guarda alvo de data/hora da confirmação para criar depois
+  convNow.scheduleCtx = convNow.scheduleCtx || {};
+  convNow.scheduleCtx.pending = { dd, mm, hhmm };
 
-          // Monta um texto que o nosso parser (utils.esm.js) entende
-          // Obs.: ele usa o ANO ATUAL por padrão.
-          const textForParser = `${dd}/${mm} ${hhmm}`;
+  // Coleta/atualiza identidade agora (nome/telefone/motivo/moda/idade)
+  const pickedNow = extractPatientInfo({ payload: p, phone: from, conversation: convNow }) || {};
+  const ageNow =
+    extractAgeFromText(answer) ||
+    extractAgeFromText(userText) ||
+    extractAgeFromText((convNow.messages || []).map(m => m.content).join("\n")) ||
+    convNow.scheduleCtx.age ||
+    null;
 
-          const { found, startISO, endISO } = parseCandidateDateTime(
-            textForParser,
-            process.env.TZ || "America/Sao_Paulo"
-          );
+  convNow.scheduleCtx = {
+    ...convNow.scheduleCtx,
+    name: pickedNow.name,
+    phoneFormatted: pickedNow.phoneFormatted,
+    reason: pickedNow.reason,
+    modality: pickedNow.modality,
+    age: ageNow
+  };
 
-          if (found) {
-            // Enriquecer o evento com Nome, Telefone, Motivo e Modalidade
-const conv = getConversation(from);
-const { name, phoneFormatted, reason, modality } = extractPatientInfo({
-  payload: p,
-  phone: from,
-  conversation: conv,
-});
+  // Checa faltantes e sempre faz o "confere" completo
+  const nm = convNow.scheduleCtx.name && convNow.scheduleCtx.name !== "Paciente (WhatsApp)" ? convNow.scheduleCtx.name : null;
+  const ph = convNow.scheduleCtx.phoneFormatted || null;
+  const rz = convNow.scheduleCtx.reason || null;
+  const md = convNow.scheduleCtx.modality || null;
+  const ag = convNow.scheduleCtx.age || null;
 
-// Título com modalidade
-const summary = `Consulta (${modality}) — ${name} — ${reason} — ${phoneFormatted}`;
+  const missing = [];
+  if (!nm) missing.push("nome");
+  if (!ph) missing.push("telefone");
+  if (!ag) missing.push("idade");
+  if (!md) missing.push("modalidade");
+  if (!rz) missing.push("motivo");
 
-// Descrição com modalidade
-const description = [
-  `Paciente: ${name}`,
-  `Telefone: ${phoneFormatted}`,
-  `Motivo: ${reason}`,
-  `Modalidade: ${modality}`,
-  `Origem: WhatsApp (Cristina)`,
-].join("\n");
+  // Monta resumo para o paciente confirmar/editar
+  const resumo =
+    `Antes de confirmar, confira seus dados:\n` +
+    `• Nome: ${nm || "_não informado_"}\n` +
+    `• Telefone: ${ph || "_não informado_"}\n` +
+    `• Idade: ${ag ? ag + " anos" : "_não informada_"}\n` +
+    `• Modalidade: ${md || "_não informada_"}\n` +
+    `• Motivo: ${rz || "_não informado_"}\n\n` +
+    `Se estiver tudo certo, responda **confirmo**.\n` +
+    `Se quiser alterar algo, pode escrever (ex.: "idade 34", "modalidade telemedicina", "motivo avaliação pré-anestésica").`;
 
-// Opcional: também refletir no "Local"
-const location =
-  modality === "Telemedicina"
-    ? "Telemedicina (link será enviado)"
-    : (process.env.CLINIC_ADDRESS || "Clínica");
-            
-            // === CHECA CONFLITO NO CALENDÁRIO ANTES DE CRIAR ===
-const { busy, conflicts } = await isSlotBlockedOrBusy({ startISO, endISO });
-if (busy) {
-  let msg = "Esse horário acabou de ficar indisponível.";
-  if (conflicts?.length) {
-    const tz = process.env.TZ || "America/Sao_Paulo";
-    const lines = conflicts.map(c => {
-      const when = new Date(c.start);
-      const lbl = when.toLocaleString("pt-BR", { timeZone: tz });
-      return `• ${lbl} — ${c.summary || "Compromisso"}`;
-    });
-    msg += "\n\nConflitos encontrados:\n" + lines.join("\n");
-  }
-  const alternativas = await listAvailableSlots({
-  fromISO: startISO,
-  days: 3,   // só os próximos 3 dias como alternativa
-  limit: 5
-});
+  // Sinaliza que estamos esperando a confirmação do paciente
+  convNow.awaitingPreconfirm = true;
+  appendMessage(from, "assistant", resumo);
+  await sendText({ to: from, text: resumo });
 
-  if (alternativas?.length) {
-    msg += "\n\nPosso te oferecer estes horários:\n" +
-      alternativas.map((s,i)=> `${i+1}) ${s.dayLabel} ${s.label}`).join("\n");
-    // guarda na memória para permitir "opção N"
-    const convMem = ensureConversation(from);
-    convMem.lastSlots = alternativas;
-    convMem.updatedAt = Date.now();
-  } else {
-    msg += "\n\nNos próximos dias não há janelas livres. Posso procurar mais adiante.";
-  }
-  await sendText({ to: from, text: msg });
-  return; // não cria evento, sai daqui
+  // Não cria evento ainda; aguarda resposta do paciente
+  return;
 }
-
+// ======== FIM DO GATE DE PRÉ-CONFIRMAÇÃO ========
 await createCalendarEvent({
   summary,
   description:
@@ -2201,6 +2226,134 @@ try {
   // ======== FIM DA REGRA DE CONFIRMAÇÃO ========
 
 // Memória + resposta ao paciente
+// === RESPOSTA À PRÉ-CONFIRMAÇÃO (quando aguardando) ===
+{
+  const convNow = getConversation(from);
+  if (convNow?.awaitingPreconfirm) {
+    const txt = String(userText || "");
+
+    // 1) Permite correções livres (idade/moda/motivo/nome/telefone)
+    //    Reutiliza nossos extratores sempre que o paciente escrever algo novo
+    const maybeAge = extractAgeFromText(txt);
+    const maybeFix = extractPatientInfo({ payload: p, phone: from, conversation: convNow }) || {};
+
+    convNow.scheduleCtx = {
+      ...(convNow.scheduleCtx || {}),
+      age: maybeAge ?? convNow.scheduleCtx?.age ?? null,
+      // se o usuário digitou novas infos, mantemos as melhores
+      name: (maybeFix.name && maybeFix.name !== "Paciente (WhatsApp)") ? maybeFix.name : (convNow.scheduleCtx?.name || null),
+      phoneFormatted: maybeFix.phoneFormatted || convNow.scheduleCtx?.phoneFormatted || null,
+      reason: maybeFix.reason || convNow.scheduleCtx?.reason || null,
+      modality: maybeFix.modality || convNow.scheduleCtx?.modality || null
+    };
+
+    const saidConfirm =
+      /\b(confirmo|pode\s+confirmar|est[aá]\s+certo|ok|isso mesmo)\b/i.test(txt);
+
+    if (!saidConfirm) {
+      // Reapresenta o resumo atualizado e pede "confirmo"
+      const nm = convNow.scheduleCtx.name && convNow.scheduleCtx.name !== "Paciente (WhatsApp)" ? convNow.scheduleCtx.name : null;
+      const ph = convNow.scheduleCtx.phoneFormatted || null;
+      const rz = convNow.scheduleCtx.reason || null;
+      const md = convNow.scheduleCtx.modality || null;
+      const ag = convNow.scheduleCtx.age || null;
+
+      const resumo2 =
+        `Conferindo:\n` +
+        `• Nome: ${nm || "_não informado_"}\n` +
+        `• Telefone: ${ph || "_não informado_"}\n` +
+        `• Idade: ${ag ? ag + " anos" : "_não informada_"}\n` +
+        `• Modalidade: ${md || "_não informada_"}\n` +
+        `• Motivo: ${rz || "_não informado_"}\n\n` +
+        `Se estiver tudo certo, responda **confirmo**.`;
+
+      appendMessage(from, "assistant", resumo2);
+      await sendText({ to: from, text: resumo2 });
+      return;
+    }
+
+    // 2) Aqui o paciente disse "confirmo" → criamos o evento
+    try {
+      const { pending } = convNow.scheduleCtx || {};
+      // Se a IA não falou a frase padrão recentemente (ex.: paciente escreveu livre),
+      // tentamos usar o slot previamente escolhido (pickedSlotISO)
+      let startISO, endISO;
+      if (convNow.scheduleCtx?.pickedSlotISO) {
+        const start = new Date(convNow.scheduleCtx.pickedSlotISO);
+        startISO = start.toISOString();
+        endISO = new Date(start.getTime() + 30 * 60 * 1000).toISOString(); // 30min padrão
+      } else if (pending) {
+        // monta a data/hora (ano atual)
+        const yyyy = new Date().getFullYear();
+        const [H, M] = pending.hhmm.split(":").map(n => parseInt(n, 10));
+        const start = new Date(Date.UTC(yyyy, parseInt(pending.mm, 10) - 1, parseInt(pending.dd, 10), H, M, 0));
+        startISO = start.toISOString();
+        endISO = new Date(start.getTime() + 30 * 60 * 1000).toISOString();
+      }
+
+      const name = convNow.scheduleCtx?.name || "Paciente (WhatsApp)";
+      const phoneFormatted = convNow.scheduleCtx?.phoneFormatted || from;
+      const reason = convNow.scheduleCtx?.reason || "Medicina da Dor";
+      const modality = convNow.scheduleCtx?.modality || "Presencial";
+
+      // Monta título/descrição no padrão atual
+      const summary = `Consulta (${modality}) — ${name}`;
+      const description =
+        `Paciente: ${name}\n` +
+        `Telefone: ${phoneFormatted}\n` +
+        (convNow.scheduleCtx?.age ? `Idade: ${convNow.scheduleCtx.age} anos\n` : "") +
+        `Motivo: ${reason}\n` +
+        `Agendamento via WhatsApp (Cristina)`;
+
+      await createCalendarEvent({
+        summary,
+        description:
+          description +
+          `\n#patient_phone:${onlyDigits(phoneFormatted)}` +
+          `\n#patient_name:${String(name || "").trim().toLowerCase()}`,
+        startISO,
+        endISO,
+        attendees: [],
+        location: process.env.CLINIC_ADDRESS || "Clínica",
+        extendedProperties: {
+          private: {
+            patient_phone: onlyDigits(phoneFormatted),
+            patient_name: String(name || "").trim().toLowerCase(),
+            modality
+          }
+        }
+      });
+
+      // marca anti re-confirmação
+      try {
+        const c = ensureConversation(from);
+        c.lastBookedAt = Date.now();
+      } catch {}
+
+      // mensagem final para o paciente (não muda seu tom)
+      const tz = process.env.TZ || "America/Sao_Paulo";
+      const fmt = new Intl.DateTimeFormat("pt-BR", { timeZone: tz, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })
+        .formatToParts(new Date(startISO))
+        .reduce((acc, p) => (acc[p.type] = p.value, acc), {});
+      const finalMsg = `Pronto, {{nome}}! Sua consulta está agendada para o dia ${fmt.day}/${fmt.month}, horário ${fmt.hour}:${fmt.minute}.`;
+
+      appendMessage(from, "assistant", finalMsg);
+      await sendText({ to: from, text: finalMsg });
+
+      // limpa estado da pré-confirmação
+      convNow.awaitingPreconfirm = false;
+      convNow.scheduleCtx = {};
+    } catch (e) {
+      console.error("Erro ao criar evento após pré-confirmação:", e?.response?.data || e);
+      await sendText({
+        to: from,
+        text: "Tive um erro ao criar o agendamento. Pode me enviar novamente as informações ou digitar 'reset' para recomeçar?"
+      });
+    }
+    return; // encerra o turno aqui
+  }
+}
+
 appendMessage(from, "user", userText);
 
 if (finalAnswer) {
