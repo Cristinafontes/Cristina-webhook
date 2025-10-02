@@ -1055,8 +1055,9 @@ async function aiAssistCancel({ from, userText }) {
   // Memória + envio
   appendMessage(from, "user", userText);
   if (answer) {
-    appendMessage(from, "assistant", answer);
-    await sendText({ to: from, text: answer });
+     appendMessage(from, "assistant", finalAnswer);
+ await sendText({ to: from, text: finalAnswer });
+
 
     // Se a IA detectar intenção de remarcar, sinalizamos para o pós-cancelamento
     try {
