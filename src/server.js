@@ -1567,7 +1567,17 @@ try {
         // Normaliza para o formato que o fluxo já entende
         userText = `Quero agendar nesse horário: ${dd}/${mm} ${hh}:${mi}`;
         const conv = ensureConversation(from);
-        conv.justPickedOption = true; // evita relistar automaticamente neste turno
+        conv.justPickedOption = true; 
+        
+        // evita relistar automaticamente neste turno
+        // Guarda o horário ISO escolhido para a IA usar na confirmação
+try {
+  const conv = ensureConversation(from);
+  conv.pendingRescheduleISO = whenISO;   // ex.: "2025-10-01T11:00:00"
+  conv.updatedAt = Date.now();
+} catch {}
+
+        
         // (não damos return: deixamos o fluxo de agendamento existente continuar)
       }
     }
@@ -1924,6 +1934,25 @@ if (justBookedRecently) {
 }
 // Sempre que o paciente mudar de ideia (ex.: estava cancelando e quer remarcar), a IA deve acolher e redirecionar gentilmente SEM reiniciar a conversa.
 systemHints.push("Se o paciente mudar de intenção (agendar ↔ cancelar ↔ remarcar ↔ tirar dúvida), acolha e redirecione para o fluxo correto, sem reiniciar e sem repetir apresentação.");
+// Se acabou de escolher um horário (opção N ou "dd/mm hh:mm"), a IA deve conduzir a confirmação completa
+try {
+  const convSnap = getConversation(from);
+  const pickedNow = !!(convSnap && convSnap.justPickedOption);
+  const saidDirectPick = /^quero agendar nesse horário:/i.test(String(userText || ""));
+  if (pickedNow || saidDirectPick) {
+    systemHints.push(
+      "AGORA conduza o REAGENDAMENTO: 1) confirme NOME COMPLETO, TELEFONE, IDADE, MODALIDADE e MOTIVO; " +
+      "2) confirme o HORÁRIO escolhido; 3) finalize com a FRASE CABALÍSTICA exata " +
+      "('Pronto! Sua consulta com a Dra. Jenifer está agendada para o dia DD/MM/AA, horário HH:MM.'). " +
+      "Use 2 dígitos para o ano (AA) e horário em 24h. NÃO crie evento — apenas escreva a frase ao final."
+    );
+
+    // Passa o horário ISO escolhido como dica oculta (se existir)
+    if (convSnap && convSnap.pendingRescheduleISO) {
+      systemHints.push(`HORARIO_ESCOLHIDO_ISO=${convSnap.pendingRescheduleISO}`);
+    }
+  }
+} catch {}
 
 const hintsBlock = systemHints.length
   ? `\n\n[HINTS (NÃO MOSTRAR AO PACIENTE): ${systemHints.join(" ")}]`
