@@ -1228,7 +1228,9 @@ let matches = [];
 try {
    // Use telefone "fallback" só para ampliar a BUSCA;
   // no filtro final, só exigimos telefone se o paciente informou explicitamente.
-  const phoneForFetch = ctx.phone || (normalizePhoneForLookup(conversations.get(from)?.lastKnownPhone) || "");
+  // Se o paciente NÃO confirmou telefone agora, NÃO restrinja pela memória.
+// Isso evita perder eventos válidos quando ele enviou só o nome correto.
+  const phoneForFetch = ctx.phone || "";
   const nameForLookup  = ctx.name  || "";
 
   // 4.1) Busca ampla por paciente no período
@@ -1275,6 +1277,17 @@ try {
   matches = [];
 }
 
+// Fallback: se não achou, tente novamente relaxando o outro identificador
+if (!matches.length && ctx.name && !ctx.phone) {
+  // Nome informado, telefone não: busca novamente só por nome
+  const raw2 = await findPatientEvents({ phone: "", name: nameForLookup, daysBack: 365, daysAhead: 365 });
+  matches = raw2.filter(ev => eventMatchesIdentity(ev, { phone: "", name: nameForLookup }));
+}
+if (!matches.length && ctx.phone && !ctx.name) {
+  // Telefone informado, nome não: busca novamente só por telefone
+  const raw3 = await findPatientEvents({ phone: ctx.phone, name: "", daysBack: 365, daysAhead: 365 });
+  matches = raw3.filter(ev => eventMatchesIdentity(ev, { phone: ctx.phone, name: "" }));
+}
 
     // 5) Se nada encontrado, peça o que falta (sem travar)
     if (!matches.length) {
@@ -1841,7 +1854,7 @@ if (dayStart.getTime() < today0.getTime()) {
         } else {
           const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`);
           const msg =
-            `Claro, escolha uma dentre as opções para **${dd}/${mm}** que seguem abaixo:\n` +
+            `Perfeito, {{nome}} — já te envio as opções para **${dd}/${mm}**:\n` +
             linhas.join("\n") +
             `\n\nResponda com **opção N** (ex.: "opção 3") ou digite **data e horário** (ex.: "24/09 14:00").`;
           appendMessage(from, "assistant", msg);
@@ -2070,7 +2083,7 @@ try {
     } else {
       const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`).join("\n");
       finalAnswer =
-        "Claro, escolha uma dentre as opções mais próximas que seguem abaixo:\n" +
+        "Perfeito — já te envio as **opções mais próximas** agora:\n" +
         linhas +
         '\n\nVocê pode responder com **opção N** (ex.: "opção 3") ou digitar **data e horário** (ex.: "24/09 14:00").';
 
