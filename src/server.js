@@ -1861,9 +1861,9 @@ if (dayStart.getTime() < today0.getTime()) {
   // remove saudações para não confundir o detector com o "dia" de "bom dia"
   const rawNoGreeting = raw.replace(/\b(bom\s*dia|boa\s*tarde|boa\s*noite|ol[áa]|oi)\b/g, "").trim();
   // Se o paciente está perguntando disponibilidade, não mostre o "guarda"
-  const asksAvailability = /\b(quando\s*tem(?:\b|[\s?!.])|tem\s*(hor[aá]rio|agenda)|quais\s*hor[aá]rios|hor[aá]rios?\s*dispon[ií]veis)\b/i
-    .test(rawNoGreeting);
-  if (asksAvailability) { /* não manda a frase do guarda */ return; }
+  const asksAvailability =
+    /\b(quando\s*tem(?:\b|[\s?!.])|tem\s*(hor[aá]rio|agenda)|quais\s*hor[aá]rios|hor[aá]rios?\s*dispon[ií]veis)\b/i
+      .test(rawNoGreeting);
 
   const hintsDate = /\b(tem|dia|data|agenda|quando|qdo|pr[oó]xim[ao]s?|semana|segunda|ter[cç]a|quarta|quinta|sexta|s[áa]bado)\b/.test(rawNoGreeting);
   const hasExplicit = /(\b\d{1,2}[\/\-]\d{1,2}\b)|\b(\d{1,2}:\d{2})\b/.test(rawNoGreeting);
