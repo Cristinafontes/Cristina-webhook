@@ -1854,42 +1854,7 @@ if (dayStart.getTime() < today0.getTime()) {
     console.error("[future-date] erro:", e?.message || e);
   }
 }
-// === GUARDA: paciente pescando datas com texto impreciso (re-prompt acolhedor, sem travar) ===
-{
-    const raw = (userText || "").toLowerCase();
-  // remove saudações para não confundir o detector com o "dia" de "bom dia"
-  const rawNoGreeting = raw.replace(/\b(bom\s*dia|boa\s*tarde|boa\s*noite|ol[áa]|oi)\b/g, "").trim();
-
-  const hintsDate = /\b(tem|dia|data|agenda|quando|qdo|pr[oó]xim[ao]s?|semana|segunda|ter[cç]a|quarta|quinta|sexta|s[áa]bado)\b/.test(rawNoGreeting);
-  const hasExplicit = /(\b\d{1,2}[\/\-]\d{1,2}\b)|\b(\d{1,2}:\d{2})\b/.test(rawNoGreeting);
-  const looksOption = /^\s*(op[cç][aã]o\s*)?\d+[).]?\s*$/.test(rawNoGreeting);
-
-// evita a redundância quando a pessoa pede "mais próximo"
-const rawLite = rawNoGreeting
-  .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-
-const wantsNearest =
-  /\b(mais\s*proxim[oa]|data\s*mais\s*proxim[oa]|primeir[oa]\s*(data|horario)|mais\s*cedo(\s*possivel)?)\b/.test(rawLite);
-
-const wantsAvailability =
-  /\b(quando\s*tem\s*(livre|agenda|disponivel)|tem\s*(horario|agenda)|horarios?\s*disponiveis|quais\s*horarios|quando\s*(pode|daria))\b/.test(rawLite);
-
-  // debug leve: ver no log quando for pedido de "mais proximo"
-if (wantsNearest) console.log("[guard] pedido de 'mais proximo' detectado:", rawNoGreeting);
-  
-  if (hintsDate && !hasExplicit && !looksOption &&
-    (getConversation(from)?.mode || null) !== "cancel" &&
-    !wantsNearest && !wantsAvailability) {
-    // Acolhe, pede no formato que destrava e segue o fluxo
-    await sendText({
-      to: from,
-      text:
-        "Claro! Posso te ajudar com a agenda. Me diga uma **data** (ex.: 24/09) ou responda com **opção N** da lista. " +
-        "Se preferir, pode perguntar por um dia da semana (ex.: \"próxima quinta\")."
-    });
-    // Mantemos a conversa aberta (sem return) para que a IA também possa responder, se quiser.
-  }
-}
+{ /* guard removido a pedido do Marcos: não enviamos mais o prompt padrão aqui */ }
 // === VALIDADOR RÁPIDO DE "DATA + HORA" (mensagem de ajuda quando formato inválido) ===
 try {
   const tz = process.env.TZ || "America/Sao_Paulo";
@@ -2046,7 +2011,9 @@ try {
   const modeNow = getConversation(from)?.mode || null;
 
   // dispare somente quando a IA PROMETER enviar horários
-  const shouldList = /vou te enviar os hor[aá]rios livres/i.test(answer || "");
+  const shouldList =
+  /vou te enviar os hor[aá]rios livres/i.test(answer || "") ||
+  /perfeito,\s*j[aá]\s*te mando as op[cç][oõ]es na mensagem a seguir/i.test(answer || "");
 
   // não autolistar se acabou de escolher "opção N" ou se está em modo cancelamento
   const skipAuto = Boolean(convNow.justPickedOption) || modeNow === "cancel";
