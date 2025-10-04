@@ -1057,6 +1057,41 @@ async function aiAssistCancel({ from, userText }) {
   if (answer) {
     appendMessage(from, "assistant", answer);
     await sendText({ to: from, text: answer });
+// --- [SE A IA PROMETER ENVIAR OPÇÕES, O SERVIDOR ENVIA NA SEQUÊNCIA] ---
+if (
+  /já te mando as opções/i.test(answer) ||
+  /opções.*na mensagem a seguir/i.test(answer)
+) {
+  // pega próximos horários
+  const slots = await listAvailableSlots({
+    fromISO: new Date().toISOString(),
+    days: 14,
+    limit: SLOTS_PAGE_SIZE
+  });
+
+  let msg;
+  if (!slots.length) {
+    msg = "No momento não encontrei horários disponíveis. Pode me dizer um **dia específico** (ex.: 24/09)?";
+  } else {
+    const linhas = slots.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`).join("\n");
+    msg =
+      "Aqui estão as próximas opções disponíveis:\n" +
+      linhas +
+      '\n\nResponda com **opção N** (ex.: "opção 3") ou digite **data e horário** (ex.: "24/09 14:00").';
+  }
+
+  appendMessage(from, "assistant", msg);
+  await sendText({ to: from, text: msg });
+
+  // evita relistar no MESMO turno e previne duplicação
+  const c = ensureConversation(from);
+  c.justPickedOption = true;
+  setTimeout(() => {
+    const c2 = getConversation(from);
+    if (c2) c2.justPickedOption = false;
+  }, 1500);
+}
+// --- [FIM DO BLOCO DE ENVIO AUTOMÁTICO DE OPÇÕES] ---
 
     // Se a IA detectar intenção de remarcar, sinalizamos para o pós-cancelamento
     try {
