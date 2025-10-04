@@ -858,6 +858,9 @@ async function handleInbound(req, res) {
     }
 
     const trimmed = (userText || "").trim().toLowerCase();
+    // Marca que o paciente acabou de falar (libera respostas mesmo após longos silêncios)
+ensureConversation(from).lastUserAt = Date.now();
+
   // === MEMÓRIA DE IDENTIDADE (nome/telefone) ===
 {
   const conv = ensureConversation(from);
@@ -1109,6 +1112,9 @@ if (
   const convMem = getConversation(from);
   if (convMem?.mode === "cancel") {
     const ctx = convMem.cancelCtx || (convMem.cancelCtx = { phone: "", name: "", dateISO: null, timeHHMM: null, chosenEvent: null });
+    // Garante que o anti-silêncio não bloqueie as respostas nesta etapa
+ensureConversation(from).lastUserAt = Date.now();
+
     // Se estamos aguardando confirmação do cancelamento:
 if (ctx.awaitingConfirm) {
     const yes = /\b(sim|pode|confirmo|confirmar|ok|isso|pode\s*cancelar|pode\s*sim|tudo\s*certo)\b/i.test(userText || "");
