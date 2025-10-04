@@ -1966,7 +1966,11 @@ const wantsAvailability =
   /\b(quando\s*tem\s*(livre|agenda|disponivel)|tem\s*(horario|agenda)|horarios?\s*disponiveis|quais\s*horarios|quando\s*(pode|daria))\b/.test(t);
 
 // dispare a listagem se for qualquer uma das intenções acima
-if ((wantsNearest || wantsAvailability) && (getConversation(from)?.mode || null) !== "cancel") {
+if (
+   (wantsNearest || wantsAvailability) &&
+   (getConversation(from)?.mode || null) !== "cancel" &&
+   process.env.AVAIL_FAST_PATH !== "false"
+ ) {
     const baseISO = new Date().toISOString();
 
     // pega próximos dias úteis, limitado à sua página
