@@ -1580,7 +1580,7 @@ if (genericPeriod.test(lower)) {
 
   await sendText({
     to: from,
-    text: "Entendi! 😊 Você poderia me dizer um **dia e horário específico** que prefere nesse período? (Ex.: \"15 de novembro às 14h\")"
+    text: "Entendi! 😊 Você poderia me dizer um **dia específico** que prefere nesse período? (Ex.: \"15 de novembro\")"
   });
 
   return; // 🔥 Interrompe o fluxo normal aqui
