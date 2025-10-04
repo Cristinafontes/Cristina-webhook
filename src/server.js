@@ -1586,6 +1586,100 @@ if (genericPeriod.test(lower)) {
   return; // 🔥 Interrompe o fluxo normal aqui
 }
 // --- [FIM DO INTERCEPTOR] ---
+// 0) Normalização de datas "por extenso" e abreviadas
+{
+  let norm = lower; // começa do texto já minúsculo e sem acentos
+
+  // Meses -> número (aceita abreviação e prefixos, ex.: "nov", "novem")
+  const monthMap = {
+    janeiro: 1, jan: 1,
+    fevereiro: 2, fev: 2,
+    marco: 3, março: 3, mar: 3,
+    abril: 4, abr: 4,
+    maio: 5, mai: 5,
+    junho: 6, jun: 6,
+    julho: 7, jul: 7,
+    agosto: 8, ago: 8,
+    setembro: 9, set: 9, setem: 9,
+    outubro: 10, out: 10, outu: 10,
+    novembro: 11, nov: 11, novem: 11,
+    dezembro: 12, dez: 12, dezem: 12,
+  };
+
+  // Dia por extenso (1–31). Aceita “vinte e três”, etc.
+  const dayWords = {
+    "primeiro":1,"um":1,"dois":2,"tres":3,"três":3,"quatro":4,"cinco":5,"seis":6,"sete":7,"oito":8,"nove":9,"dez":10,
+    "onze":11,"doze":12,"treze":13,"quatorze":14,"catorze":14,"quinze":15,"dezesseis":16,"dezessete":17,"dezoito":18,"dezenove":19,"dezanove":19,
+    "vinte":20, "vinte e um":21,"vinte e dois":22,"vinte e tres":23,"vinte e três":23,"vinte e quatro":24,"vinte e cinco":25,"vinte e seis":26,
+    "vinte e sete":27,"vinte e oito":28,"vinte e nove":29,"trinta":30,"trinta e um":31
+  };
+  // constrói regex que aceita espaços na forma “vinte e tres”
+  const dayWordRe = new RegExp(
+    "\\b(" + Object.keys(dayWords)
+      .sort((a,b)=>b.length-a.length)
+      .map(w => w.replace(/\s+/g,"\\s+"))
+      .join("|") + ")\\b","i"
+  );
+
+  // 0.1) Converte “15 de novembro”, “15 de nov”, “15 do 11”
+  norm = norm.replace(
+    /\b(\d{1,2})\s*(?:de|do)\s*([a-z]{3,}|\d{1,2})(?:\s*(?:de)?\s*(\d{4}))?(?:\s*(?:as|às|a[s]?)\s*(\d{1,2})(?::|h)?(\d{2})?)?/gi,
+    (_, d, mth, y, hh, mi) => {
+      let mm;
+      if (/^\d{1,2}$/.test(mth)) {
+        mm = String(mth).padStart(2,"0");
+      } else {
+        // mês por nome/abreviação/prefixo
+        const hit = Object.keys(monthMap).find(k => mth.startsWith(k));
+        mm = hit ? String(monthMap[hit]).padStart(2,"0") : null;
+      }
+      if (!mm) return _; // não entendeu o mês → não mexe
+
+      const dd = String(d).padStart(2,"0");
+      let time = "";
+      if (hh) time = ` ${String(hh).padStart(2,"0")}:${mi ? String(mi).padStart(2,"0") : "00"}`;
+      return `${dd}/${mm}${time}`;
+    }
+  );
+
+  // 0.2) Converte “quinze de novembro …” (dia em palavras)
+  norm = norm.replace(
+    new RegExp(`${dayWordRe.source}\\s*(?:de|do)\\s*([a-z]{3,}|\\d{1,2})(?:\\s*(?:de)?\\s*(\\d{4}))?(?:\\s*(?:as|às|a[s]?)\\s*(\\d{1,2})(?::|h)?(\\d{2})?)?`,"gi"),
+    (match, diaWord, mth, y, hh, mi) => {
+      const dw = match.match(dayWordRe);
+      const ddNum = dw && dayWords[dw[1].toLowerCase().replace(/\s+/g," ")];
+      if (!ddNum) return match;
+
+      let mm;
+      if (/^\d{1,2}$/.test(mth)) {
+        mm = String(mth).padStart(2,"0");
+      } else {
+        const hit = Object.keys(monthMap).find(k => mth.startsWith(k));
+        mm = hit ? String(monthMap[hit]).padStart(2,"0") : null;
+      }
+      if (!mm) return match;
+
+      let time = "";
+      if (hh) time = ` ${String(hh).padStart(2,"0")}:${mi ? String(mi).padStart(2,"0") : "00"}`;
+      return `${String(ddNum).padStart(2,"0")}/${mm}${time}`;
+    }
+  );
+
+  // 0.3) Caso tenha virado apenas “DD/MM” (sem horário), peça o horário e salve a data
+  const onlyDate = norm.match(/\b(\d{2})\/(\d{2})\b(?!\s*\d)/);
+  const hasTime  = /\b\d{1,2}(?::|h)\d{0,2}\b/.test(norm);
+  if (onlyDate && !hasTime) {
+    const dd = onlyDate[1], mm = onlyDate[2];
+    // salva para próxima mensagem
+    const conv = ensureConversation(from);
+    conv.pendingDateISO = `${new Date().getFullYear()}-${mm}-${dd}T00:00:00`;
+    await sendText({ to: from, text: "Perfeito! Qual **horário** você prefere? (ex.: 14:00 ou 14h)" });
+    return; // não deixa cair nos regex seguintes neste turno
+  }
+
+  // Se normalizou para “DD/MM HH:MM”, reaproveita os regex padrões adiante
+  lower = norm;
+}
 
     // 1) Padrão: DD/MM[(/YYYY)] + HH:MM  (aceita "11h00" também)
     let m = lower.match(/\b(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?\s+(\d{1,2})(?::|h)(\d{2})\b/);
