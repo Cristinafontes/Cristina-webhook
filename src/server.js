@@ -1529,6 +1529,22 @@ try {
       .toLowerCase()
       .normalize("NFD")
       .replace(/[\u0300-\u036f]/g, "");
+// --- [INTERCEPTOR DE PERÍODOS GENÉRICOS] ---
+const genericPeriod = /\b(novembro|dezembro|janeiro|fevereiro|março|abril|maio|junho|julho|agosto|setembro|ano que vem|mês que vem|proximo ano|próximo ano)\b/i;
+
+if (genericPeriod.test(lower)) {
+  // Não enviar lista automática aqui — deixar a IA conduzir
+  const conv = ensureConversation(from);
+  conv.awaitingSpecificDate = true; // flag para IA saber que precisa guiar
+
+  await sendText({
+    to: from,
+    text: "Entendi! 😊 Você poderia me dizer um **dia e horário específico** que prefere nesse período? (Ex.: \"15 de novembro às 14h\")"
+  });
+
+  return; // 🔥 Interrompe o fluxo normal aqui
+}
+// --- [FIM DO INTERCEPTOR] ---
 
     // 1) Padrão: DD/MM[(/YYYY)] + HH:MM  (aceita "11h00" também)
     let m = lower.match(/\b(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?\s+(\d{1,2})(?::|h)(\d{2})\b/);
