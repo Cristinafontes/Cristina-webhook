@@ -1579,9 +1579,9 @@ if (genericPeriod.test(lower)) {
   conv.awaitingSpecificDate = true; // flag para IA saber que precisa guiar
 
   await sendText({
-    to: from,
-    text: "Entendi! 😊 Você poderia me dizer um **dia específico** que prefere nesse período? (Ex.: \"17/11")"
-  });
+  to: from,
+  text: `Entendi! 😊 Você poderia me dizer um **dia específico** que prefere nesse período? (Ex.: "17/11")`
+});
 
   return; // 🔥 Interrompe o fluxo normal aqui
 }
