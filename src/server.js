@@ -1572,7 +1572,7 @@ try {
   // não roubar o foco quando ainda estamos no modo de cancelamento
   if ((getConversation(from)?.mode || null) !== "cancel") {
     const raw = String(userText || "");
-    const lower = raw
+    let lower = raw
       .toLowerCase()
       .normalize("NFD")
       .replace(/[\u0300-\u036f]/g, "");
