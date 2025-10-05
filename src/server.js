@@ -1778,6 +1778,79 @@ if (genericPeriod.test(lower)) {
     });
     return; // não cai nos regex seguintes neste turno
   }
+// 0.4) Se há uma data pendente e o usuário mandou SÓ horário ou turno,
+//     combina e transforma em "DD/MM HH:MM" para o parser padrão.
+{
+  const conv = ensureConversation(from);
+  const pend = conv.pendingDateISO; // ex.: "2025-11-19T00:00:00"
+  if (pend) {
+    // padrões de horário: "14", "14h", "14:00", "9 30", "09h30", "às 9", "as 9h"
+    const timeRe = /\b(?:(?:a|às|as)\s*)?(\d{1,2})(?:[:h\s](\d{2}))?\b/; // minutos opcionais
+    // turnos e variações
+    const turnoRe = /\b(manha|manhã|de manha|pela manha|pela manhã|matinal|tarde|à tarde|a tarde|de tarde|noite|à noite|a noite|de noite|fim da tarde|comeco da noite|começo da noite)\b/;
+    // horas por extenso quando acompanhadas de turno: "duas da tarde", "nove da manha"
+    const hourWords = {
+      "uma":1,"um":1,"duas":2,"dois":2,"tres":3,"três":3,"quatro":4,"cinco":5,"seis":6,
+      "sete":7,"oito":8,"nove":9,"dez":10,"onze":11,"doze":12
+    };
+    const wordHourRe = new RegExp("\\b(" + Object.keys(hourWords).join("|") + ")\\b");
+
+    let hh = null, mi = null;
+
+    // 0.4.1) Tenta "14:30", "14h", "9 30", "às 9h" etc.
+    const mTime = lower.match(timeRe);
+    if (mTime) {
+      hh = parseInt(mTime[1], 10);
+      mi = mTime[2] ? parseInt(mTime[2], 10) : 0;
+      if (hh > 23) hh = hh % 24;
+      if (mi > 59) mi = 0;
+    }
+
+    // 0.4.2) Se não veio número de hora, tenta "duas da tarde", "nove da manha", etc.
+    if (hh == null) {
+      const mWordHour = lower.match(wordHourRe);
+      if (mWordHour) {
+        hh = hourWords[mWordHour[1]];
+        mi = 0;
+      }
+    }
+
+    // 0.4.3) Ajusta por turno caso tenha "manhã/tarde/noite" (e também se vier só turno)
+    const mTurno = lower.match(turnoRe);
+    if (mTurno) {
+      const t = mTurno[1];
+      // defaults do turno se a pessoa só disse "manhã/tarde/noite"
+      let defaultByTurno = null;
+      if (/manh/.test(t) || /matinal/.test(t)) defaultByTurno = { h: 9, m: 0 };          // manhã ~ 09:00
+      else if (/fim da tarde/.test(t))           defaultByTurno = { h: 17, m: 0 };        // fim da tarde ~ 17:00
+      else if (/tarde/.test(t))                  defaultByTurno = { h: 14, m: 0 };        // tarde ~ 14:00
+      else if (/comec|começ/.test(t))            defaultByTurno = { h: 18, m: 0 };        // começo da noite ~ 18:00
+      else if (/noite/.test(t))                  defaultByTurno = { h: 19, m: 0 };        // noite ~ 19:00
+
+      if (hh == null && defaultByTurno) {
+        hh = defaultByTurno.h; mi = defaultByTurno.m;
+      } else if (hh != null) {
+        // se veio "duas da tarde", ajusta 12h -> 24h conforme turno
+        if (/tarde/.test(t) && hh >= 1 && hh <= 11) hh = hh + 12;      // 1–11 da tarde => 13–23
+        if (/noite/.test(t) && hh >= 1 && hh <= 11) hh = hh + 12;      // 1–11 da noite => 13–23 (ajuste simples)
+        if ((/manh/.test(t) || /matinal/.test(t)) && hh === 12) hh = 9; // "12 da manhã" → assume 09:00
+      }
+    }
+
+    if (hh != null) {
+      // monta "DD/MM HH:MM" a partir da data pendente
+      const d = new Date(pend);
+      const dd = String(d.getDate()).padStart(2, "0");
+      const mm = String(d.getMonth() + 1).padStart(2, "0");
+      const finalStr = `${dd}/${mm} ${String(hh).padStart(2,"0")}:${String(mi ?? 0).padStart(2,"0")}`;
+
+      // libera para o parser padrão abaixo
+      lower = finalStr.toLowerCase();
+      // consumimos a pendência
+      delete conv.pendingDateISO;
+    }
+  }
+}
 
   // aplica normalização para o parser padrão adiante
   lower = norm;
