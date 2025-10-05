@@ -1672,47 +1672,6 @@ if (genericPeriod.test(lower)) {
       return `${String(ddNum).padStart(2,"0")}/${mm}${time}`;
     }
   );
-
-  // 0.3) Caso tenha virado apenas “DD/MM” (sem horário), peça o horário e salve a data
-  const onlyDate = norm.match(/\b(\d{2})\/(\d{2})\b(?!\s*\d)/);
-  const hasTime  = /\b\d{1,2}(?::|h)\d{0,2}\b/.test(norm);
-  if (onlyDate && !hasTime) {
-    const dd = onlyDate[1], mm = onlyDate[2];
-
-// Guarda a data para referência (se quiser manter o estado)
-const conv = ensureConversation(from);
-conv.pendingDateISO = `${new Date().getFullYear()}-${mm}-${dd}T00:00:00`;
-
-// Lista opções **para este dia** (não pergunta horário)
-const dayISO = `${new Date().getFullYear()}-${mm}-${dd}T00:00:00`;
-const slots = await listAvailableSlots({
-  fromISO: dayISO,   // início do dia escolhido
-  days: 1,           // só este dia
-  limit: 8           // quantas opções mostrar
-});
-
-if (!slots?.length) {
-  await sendText({
-    to: from,
-    text: "Para este dia não há horários livres. Quer tentar outro dia ou ver as próximas opções disponíveis?"
-  });
-} else {
-  const linhas = slots.map((s, i) => `${i+1}) ${s.label}`);
-  await sendText({
-    to: from,
-    text: [
-      "Claro, escolha uma dentre as opções disponíveis para este dia:",
-      ...linhas,
-      'Você pode responder com **opção N** (ex.: "opção 3") ou digitar data e horário (ex.: "24/09 14:00").'
-    ].join("\n")
-  });
-}
-
-// Importante: **não** dar return aqui, deixe o fluxo normal seguir,
-// pois ele já entende a resposta "opção N" ou "DD/MM HH:MM".
-
-  }
-
   // Se normalizou para “DD/MM HH:MM”, reaproveita os regex padrões adiante
   lower = norm;
 }
