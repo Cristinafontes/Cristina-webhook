@@ -1765,19 +1765,53 @@ if (genericPeriod.test(lower)) {
     }
   );
 
-  // 0.3) Se ficou só "DD/MM" (sem horário), peça o horário e salve a data
+  // 0.3) Se ficou só "DD/MM" (sem horário), **ofereça horários do dia** (sem pedir hora)
+{
   const onlyDate = norm.match(/\b(\d{2})\/(\d{2})\b(?!\s*\d)/);
   const hasTime  = /\b\d{1,2}(?::|h)\d{0,2}\b/.test(norm);
+
   if (onlyDate && !hasTime) {
-    const dd = onlyDate[1], mm = onlyDate[2];
-    const conv = ensureConversation(from);
-    conv.pendingDateISO = `${new Date().getFullYear()}-${mm}-${dd}T00:00:00`;
-    await sendText({
-      to: from,
-      text: "Perfeito! Qual **horário** você prefere? (ex.: 14:00 ou 14h)"
+    const dd = onlyDate[1];
+    const mm = onlyDate[2];
+    const yyyy = new Date().getFullYear();
+
+    const start = new Date(`${yyyy}-${mm}-${dd}T00:00:00`);
+    const end   = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+
+    // Busca slots (do seu provedor) e filtra só o mesmo dia
+    const all = await listAvailableSlots({
+      fromISO: start.toISOString(),
+      days: 1,
+      limit: SLOTS_PAGE_SIZE
     });
-    return; // não cai nos regex seguintes neste turno
+
+    const sameDay = (all || []).filter(s => {
+      const t = new Date(s.startISO);
+      return t >= start && t < end;
+    });
+
+    let msg;
+    if (!sameDay.length) {
+      msg = "Para este dia não encontrei horários. Se quiser, posso mostrar os próximos disponíveis. Diga **mais**.";
+    } else {
+      const linhas = sameDay.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`).join("\n");
+      msg =
+        "Claro, escolha uma das opções disponíveis para esse dia:\n" +
+        linhas +
+        '\n\nResponda com **opção N** (ex.: "opção 3"). Se quiser ver **mais opções** em outros dias, responda: **mais**.';
+    }
+
+    // guarda lista para permitir "opção N" / "N"
+    const conv = ensureConversation(from);
+    conv.lastSlots = sameDay;
+    conv.slotCursor = { fromISO: start.toISOString(), page: 1 };
+    conv.updatedAt = Date.now();
+
+    await sendText({ to: from, text: msg });
+    return; // encerra este turno (não cai nos parsers abaixo)
   }
+}
+
 
   // aplica normalização para o parser padrão adiante
   lower = norm;
