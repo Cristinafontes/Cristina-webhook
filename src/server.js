@@ -64,7 +64,7 @@ function _isQuietHours(now = new Date()) {
   } catch { return false; }
 }
 
-async function sendText({ to, text }) {
+async function sendText({ to, text, skipDedupeOnce = false }) {
   // mantém compatibilidade com o resto do código
   const provider = (process.env.WHATSAPP_PROVIDER || "GUPSHUP").toUpperCase();
   const phone = (to || "").toString().replace(/\D/g, "");
@@ -101,10 +101,16 @@ async function sendText({ to, text }) {
   try {
     const DEDUPE_WINDOW_MS = parseInt(process.env.DEDUPE_WINDOW_MS || "30000", 10);
     const last = _lastPayloadByPhone.get(phone);
-    if (last && last.text === msg && Date.now() - last.at < DEDUPE_WINDOW_MS) {
-      console.log("[sendText] dedupe: ignorando repetição para", phone);
-      return { skipped: "dedupe" };
-    }
+    if (
+  !skipDedupeOnce &&  // 👈 ignora dedupe se skipDedupeOnce = true
+  last && 
+  last.text === msg && 
+  Date.now() - last.at < DEDUPE_WINDOW_MS
+) {
+  console.log("[sendText] dedupe: ignorando repetição para", phone);
+  return { skipped: "dedupe" };
+}
+
   } catch {}
 
   // 1.5) Evita iniciar outbound depois de muito silêncio do paciente
@@ -1580,8 +1586,10 @@ if (genericPeriod.test(lower)) {
 
   await sendText({
   to: from,
-  text: `Entendi! 😊 Você poderia me dizer um **dia específico** que prefere nesse período? (Ex.: "17/11")`
+  text: `Entendi! 😊 Você poderia me dizer um **dia específico** que prefere nesse período? (Ex.: "17/11")`,
+  skipDedupeOnce: true
 });
+
 
   return; // 🔥 Interrompe o fluxo normal aqui
 }
@@ -1678,6 +1686,100 @@ if (genericPeriod.test(lower)) {
   }
 
   // Se normalizou para “DD/MM HH:MM”, reaproveita os regex padrões adiante
+  lower = norm;
+}
+// 0) Normalização de datas por extenso/abreviadas -> vira "DD/MM HH:MM"
+{
+  let norm = lower; // use a string já lowercased e sem acentos (igual você faz acima)
+
+  // Mapa de meses (nome/abreviação/prefixo -> número)
+  const monthMap = {
+    janeiro: 1, jan: 1,
+    fevereiro: 2, fev: 2,
+    marco: 3, março: 3, mar: 3,
+    abril: 4, abr: 4,
+    maio: 5, mai: 5,
+    junho: 6, jun: 6,
+    julho: 7, jul: 7,
+    agosto: 8, ago: 8,
+    setembro: 9, set: 9, setem: 9,
+    outubro: 10, out: 10, outu: 10,
+    novembro: 11, nov: 11, novem: 11,
+    dezembro: 12, dez: 12, dezem: 12,
+  };
+
+  // Dia por extenso (1–31) – aceita "vinte e três", etc.
+  const dayWords = {
+    "primeiro":1,"um":1,"dois":2,"tres":3,"três":3,"quatro":4,"cinco":5,"seis":6,"sete":7,"oito":8,"nove":9,"dez":10,
+    "onze":11,"doze":12,"treze":13,"quatorze":14,"catorze":14,"quinze":15,"dezesseis":16,"dezessete":17,"dezoito":18,"dezenove":19,"dezanove":19,
+    "vinte":20,"vinte e um":21,"vinte e dois":22,"vinte e tres":23,"vinte e três":23,"vinte e quatro":24,"vinte e cinco":25,"vinte e seis":26,
+    "vinte e sete":27,"vinte e oito":28,"vinte e nove":29,"trinta":30,"trinta e um":31
+  };
+  const dayWordRe = new RegExp(
+    "\\b(" + Object.keys(dayWords)
+      .sort((a,b)=>b.length-a.length)
+      .map(w => w.replace(/\s+/g,"\\s+"))
+      .join("|") + ")\\b","i"
+  );
+
+  // 0.1) "15 de novembro", "15 de nov", "15 do 11", com horário opcional
+  norm = norm.replace(
+    /\b(\d{1,2})\s*(?:de|do)\s*([a-z]{3,}|\d{1,2})(?:\s*(?:de)?\s*(\d{4}))?(?:\s*(?:as|às|a[s]?)\s*(\d{1,2})(?::|h)?(\d{2})?)?/gi,
+    (_, d, mth, y, hh, mi) => {
+      let mm;
+      if (/^\d{1,2}$/.test(mth)) {
+        mm = String(mth).padStart(2,"0");
+      } else {
+        const hit = Object.keys(monthMap).find(k => mth.startsWith(k));
+        mm = hit ? String(monthMap[hit]).padStart(2,"0") : null;
+      }
+      if (!mm) return _; // não entendeu mês -> não mexe
+
+      const dd = String(d).padStart(2,"0");
+      let time = "";
+      if (hh) time = ` ${String(hh).padStart(2,"0")}:${mi ? String(mi).padStart(2,"0") : "00"}`;
+      return `${dd}/${mm}${time}`;
+    }
+  );
+
+  // 0.2) "quinze de novembro" / "quinze do 11", com horário opcional
+  norm = norm.replace(
+    new RegExp(`${dayWordRe.source}\\s*(?:de|do)\\s*([a-z]{3,}|\\d{1,2})(?:\\s*(?:de)?\\s*(\\d{4}))?(?:\\s*(?:as|às|a[s]?)\\s*(\\d{1,2})(?::|h)?(\\d{2})?)?`,"gi"),
+    (match, diaWord, mth, y, hh, mi) => {
+      const dw = match.match(dayWordRe);
+      const ddNum = dw && dayWords[dw[1].toLowerCase().replace(/\s+/g," ")];
+      if (!ddNum) return match;
+
+      let mm;
+      if (/^\d{1,2}$/.test(mth)) {
+        mm = String(mth).padStart(2,"0");
+      } else {
+        const hit = Object.keys(monthMap).find(k => mth.startsWith(k));
+        mm = hit ? String(monthMap[hit]).padStart(2,"0") : null;
+      }
+      if (!mm) return match;
+
+      let time = "";
+      if (hh) time = ` ${String(hh).padStart(2,"0")}:${mi ? String(mi).padStart(2,"0") : "00"}`;
+      return `${String(ddNum).padStart(2,"0")}/${mm}${time}`;
+    }
+  );
+
+  // 0.3) Se ficou só "DD/MM" (sem horário), peça o horário e salve a data
+  const onlyDate = norm.match(/\b(\d{2})\/(\d{2})\b(?!\s*\d)/);
+  const hasTime  = /\b\d{1,2}(?::|h)\d{0,2}\b/.test(norm);
+  if (onlyDate && !hasTime) {
+    const dd = onlyDate[1], mm = onlyDate[2];
+    const conv = ensureConversation(from);
+    conv.pendingDateISO = `${new Date().getFullYear()}-${mm}-${dd}T00:00:00`;
+    await sendText({
+      to: from,
+      text: "Perfeito! Qual **horário** você prefere? (ex.: 14:00 ou 14h)"
+    });
+    return; // não cai nos regex seguintes neste turno
+  }
+
+  // aplica normalização para o parser padrão adiante
   lower = norm;
 }
 
