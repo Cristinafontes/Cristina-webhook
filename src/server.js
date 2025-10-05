@@ -1779,7 +1779,7 @@ if (genericPeriod.test(lower)) {
 
     let msg;
     if (!sameDay.length) {
-      msg = "Para este dia não encontrei horários. Se quiser, posso mostrar os próximos disponíveis. Diga **mais**.";
+      msg = "Para este dia não encontrei horários. Se quiser, pode me diga outro dia para verificarmos.";
     } else {
       const linhas = sameDay.map((s, i) => `${i + 1}) ${s.dayLabel} ${s.label}`).join("\n");
       msg =
