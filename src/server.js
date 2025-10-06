@@ -867,12 +867,12 @@ async function handleInbound(req, res) {
     // Marca que o paciente acabou de falar (libera respostas mesmo após longos silêncios)
 ensureConversation(from).lastUserAt = Date.now();
 
-  // === MEMÓRIA DE IDENTIDADE (nome/telefone) ===
+// === NÃO CAPTURA MAIS AQUI ===
+// A captura de nome será feita apenas no momento da mensagem pré-confirmação
+// para evitar pegar frases erradas como "ela atende bradesco"
 {
   const conv = ensureConversation(from);
-  const picked = extractPatientInfo({ payload: p, phone: from, conversation: conv });
-  if (picked?.name && picked.name !== "Paciente (WhatsApp)") conv.patientName = picked.name;
-  conv.lastKnownPhone = from;
+  conv.lastKnownPhone = from; // ainda salvamos o telefone aqui normalmente
 }
 
     if (["reset", "reiniciar", "reiniciar conversa", "novo atendimento"].includes(trimmed)) {
@@ -1066,6 +1066,23 @@ async function aiAssistCancel({ from, userText }) {
   if (answer) {
     appendMessage(from, "assistant", answer);
     await sendText({ to: from, text: answer });
+    // --- PICK NAME AT PRE-CONFIRMATION (via resposta da IA) ---
+try {
+  // Só tenta quando a IA estiver na fase "Posso agendar..." e citar "paciente"
+  if (/\bposso\s+agendar\b/i.test(answer) && /\bpaciente\b/i.test(answer)) {
+    // Captura o nome entre "paciente" e "para o dia"/"no dia"/etc.
+    const m = answer.match(/paciente\s+([A-Za-zÀ-ÿ'’. -]{3,80}?)(?=\s+(?:para|no)\s+dia|\s*,\s*para|\s+a[sà]\s)/i);
+    if (m?.[1]) {
+      const nm = m[1].replace(/\s+/g, " ").trim();
+      // exige nome + sobrenome (≥2 palavras)
+      if (nm.split(/\s+/).length >= 2) {
+        ensureConversation(from).patientName = nm;
+        console.log("[NAME PICKED - CONFIRMATION STAGE]", nm);
+      }
+    }
+  }
+} catch {}
+
 // --- [SE A IA PROMETER ENVIAR OPÇÕES, O SERVIDOR ENVIA NA SEQUÊNCIA] ---
 if (
   /já te mando as opções/i.test(answer) ||
