@@ -2600,10 +2600,7 @@ if (finalAnswer) {
     .replace(/vou conferir.*?/gi, "")
     .replace(/já te confirmo.*?/gi, "")
     .trim();
-
-  appendMessage(from, "assistant", finalAnswer);
-  await sendText({ to: from, text: finalAnswer });
-  NAME PICKED NA PRÉ-CONFIRMAÇÃO ===
+//========NAME PICKED NA PRÉ-CONFIRMAÇÃO ===
 try {
   // Pega o nome quando a IA pergunta: “Posso agendar a consulta do(a) paciente NOME para o dia ...”
   const m = finalAnswer && /consulta\s+do(?:\\(a\\))?\s+paciente\s+([A-Za-zÀ-ÿ'’\\- ]{3,60}?)(?=\\s+(para|pro|no)\\s+dia)/i.exec(finalAnswer);
@@ -2615,6 +2612,9 @@ try {
     console.log("[NAME PICKED @pre-confirm]", picked);
   }
 } catch {}
+  appendMessage(from, "assistant", finalAnswer);
+  await sendText({ to: from, text: finalAnswer });
+
   // Marca que a Cristina já se apresentou (anti-reapresentação)
 // Detecta frases típicas de apresentação; ajuste se quiser mais padrões.
 try {
