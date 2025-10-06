@@ -1764,6 +1764,15 @@ if (genericPeriod.test(lower)) {
 
     const start = new Date(`${yyyy}-${mm}-${dd}T00:00:00`);
     const end   = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+    // GUARD: não listar datas que já passaram
+    const today0 = new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate(), 0,0,0,0);
+    if (start.getTime() < today0.getTime()) {
+      await sendText({
+        to: from,
+        text: "Essa data já passou. Por favor, informe **uma data a partir de hoje** (ex.: 24/09)."
+      });
+      return;
+    }
 
     // Busca slots (do seu provedor) e filtra só o mesmo dia
     const all = await listAvailableSlots({
