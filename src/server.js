@@ -2571,17 +2571,22 @@ const { name, phoneFormatted, reason, modality } = extractPatientInfo({
   conversation: conv,
 });
 
+// >>> Usa o nome TRAVADO pela IA, se existir (≥ 2 palavras)
+const _lockedName = (ensureConversation(from)?.patientName || "").trim();
+const finalName   = (_lockedName.split(/\s+/).length >= 2) ? _lockedName : name;
+
 // Título com modalidade
-const summary = `Consulta (${modality}) — ${name} — ${reason} — ${phoneFormatted}`;
+const summary = `Consulta (${modality}) — ${finalName} — ${reason} — ${phoneFormatted}`;
 
 // Descrição com modalidade
 const description = [
-  `Paciente: ${name}`,
+  `Paciente: ${finalName}`,
   `Telefone: ${phoneFormatted}`,
   `Motivo: ${reason}`,
   `Modalidade: ${modality}`,
   `Origem: WhatsApp (Cristina)`,
 ].join("\n");
+
 
 // Opcional: também refletir no "Local"
 const location =
@@ -2673,17 +2678,33 @@ if (finalAnswer) {
     .replace(/vou confirmar.*?/gi, "")
     .replace(/vou conferir.*?/gi, "")
     .replace(/já te confirmo.*?/gi, "")
-    .trim();// === [ADICIONE AQUI] NAME PICKED NA PRÉ-CONFIRMAÇÃO ===
+    .trim();
+  // === [ADICIONE AQUI] NAME PICKED NA PRÉ-CONFIRMAÇÃO (duas formas) ===
 try {
-  // Captura nome quando a IA diz "consulta do(a) paciente Fulano para o dia ..."
-  const nameRegex = /consulta\s+do(?:\(a\))?\s+paciente\s+([\p{L}\p{M}\s.'-]{3,60}?)(?=\s+(?:para|pro|no)\s+dia)/iu;
-  const m = finalAnswer && nameRegex.exec(finalAnswer);
-  if (m && m[1]) {
-    const picked = m[1].replace(/\s+/g, " ").trim();
-    const c = ensureConversation(from);
-    c.patientName = picked;
-    c.updatedAt = Date.now();
-    console.log("[NAME PICKED @pre-confirm]", picked);
+  let picked = null;
+
+  // Forma A: “Obrigado/Obrigada pelas informações, Fulana. Posso agendar…”
+  // (aceita “Obrigado” ou “Obrigada”)
+  const mA = finalAnswer &&
+    /obrigad[oa][^,]*,\s*([\p{L}\p{M}\s.'-]{3,60}?)[.!?]\s*posso\s+agendar/i.exec(finalAnswer);
+
+  if (mA && mA[1]) picked = mA[1];
+
+  // Forma B: “consulta do(a) paciente Fulana para o dia …”
+  if (!picked) {
+    const mB = finalAnswer &&
+      /consulta\s+do(?:\(a\))?\s+paciente\s+([\p{L}\p{M}\s.'-]{3,60}?)(?=\s+(?:para|pro|no)\s+dia)/iu.exec(finalAnswer);
+    if (mB && mB[1]) picked = mB[1];
+  }
+
+  if (picked) {
+    picked = picked.replace(/\s+/g, " ").trim();
+    if (picked.split(/\s+/).length >= 2) {
+      const c = ensureConversation(from);
+      c.patientName = picked;
+      c.updatedAt = Date.now();
+      console.log("[NAME PICKED @pre-confirm ✅]", picked);
+    }
   }
 } catch (err) {
   console.error("Erro ao tentar capturar nome na pré-confirmação:", err);
