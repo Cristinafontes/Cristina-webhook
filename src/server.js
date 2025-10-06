@@ -1066,22 +1066,27 @@ async function aiAssistCancel({ from, userText }) {
   if (answer) {
     appendMessage(from, "assistant", answer);
     await sendText({ to: from, text: answer });
-    // --- PICK NAME AT PRE-CONFIRMATION (via resposta da IA) ---
+    // --- PICK NAME ONLY AT PRE-CONFIRMATION (robust version) ---
 try {
-  // Só tenta quando a IA estiver na fase "Posso agendar..." e citar "paciente"
+  // Só tenta extrair o nome SE a IA estiver perguntando explicitamente sobre o agendamento e citar "paciente"
   if (/\bposso\s+agendar\b/i.test(answer) && /\bpaciente\b/i.test(answer)) {
-    // Captura o nome entre "paciente" e "para o dia"/"no dia"/etc.
+    // Zera qualquer nome capturado anteriormente (evita pegar frases erradas como "ela atende bradesco")
+    ensureConversation(from).patientName = null;
+
+    // Captura o nome entre "paciente" e "para o dia"/"no dia"/"às" etc.
     const m = answer.match(/paciente\s+([A-Za-zÀ-ÿ'’. -]{3,80}?)(?=\s+(?:para|no)\s+dia|\s*,\s*para|\s+a[sà]\s)/i);
     if (m?.[1]) {
       const nm = m[1].replace(/\s+/g, " ").trim();
       // exige nome + sobrenome (≥2 palavras)
       if (nm.split(/\s+/).length >= 2) {
         ensureConversation(from).patientName = nm;
-        console.log("[NAME PICKED - CONFIRMATION STAGE]", nm);
+        console.log("[NAME PICKED - CONFIRMATION STAGE ✅]", nm);
       }
     }
   }
-} catch {}
+} catch (e) {
+  console.error("[NAME PICKED ERROR]", e);
+}
 
 // --- [SE A IA PROMETER ENVIAR OPÇÕES, O SERVIDOR ENVIA NA SEQUÊNCIA] ---
 if (
