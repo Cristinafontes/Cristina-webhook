@@ -1070,18 +1070,31 @@ async function aiAssistCancel({ from, userText }) {
   if (answer) {
     appendMessage(from, "assistant", answer);
     await sendText({ to: from, text: answer });
-   // --- PICK NAME ONLY AT PRE-CONFIRMATION (robust version) ---
+   // --- CAPTURA NOME NA PRÉ-CONFIRMAÇÃO (versão robusta) ---
 try {
-  // Só tenta extrair o nome SE a IA estiver perguntando explicitamente sobre o agendamento e citar "paciente"
-  if (/\bposso\s+agendar\b/i.test(answer) && /\bpaciente\b/i.test(answer)) {
-    // Zera qualquer nome capturado anteriormente (evita pegar frases erradas como "ela atende bradesco")
+  // Garante que o trecho só roda se a IA estiver emitindo a frase de pré-confirmação
+  if (
+    /\bposso\s+agendar\b/i.test(answer) &&
+    (/\bpaciente\b/i.test(answer) || /\bobrigado\b/i.test(answer))
+  ) {
+    // Zera nome anterior para evitar pegar frases ruins
     ensureConversation(from).patientName = null;
 
-    // Captura o nome entre "paciente" e "para o dia"/"no dia"/"às" etc.
-    const m = answer.match(/paciente\s+([A-Za-zÀ-ÿ'’. -]{3,80}?)(?=\s+(?:para|no)\s+dia|\s*,\s*para|\s+a[sà]\s)/i);
-    if (m?.[1]) {
-      const nm = m[1].replace(/\s+/g, " ").trim();
-      // exige nome + sobrenome (≥2 palavras)
+    let nm = null;
+
+    // Caso 1: "paciente Fulano da Silva para o dia..."
+    const m1 = answer.match(/paciente\s+([A-Za-zÀ-ÿ'’. -]{3,80}?)(?=\s+(?:para|no)\s+dia|\s*,\s*para|\s+a[sà]\s)/i);
+    if (m1?.[1]) nm = m1[1];
+
+    // Caso 2: "Obrigado pelas informações Fulano da Silva. Posso agendar a sua consulta..."
+    if (!nm) {
+      const m2 = answer.match(/informações[^\w]+([A-Za-zÀ-ÿ'’. -]{3,80}?)(?=\.\s*Posso\s+agendar)/i);
+      if (m2?.[1]) nm = m2[1];
+    }
+
+    if (nm) {
+      nm = nm.replace(/\s+/g, " ").trim();
+      // Só aceita se tiver nome + sobrenome
       if (nm.split(/\s+/).length >= 2) {
         ensureConversation(from).patientName = nm;
         console.log("[NAME PICKED - CONFIRMATION STAGE ✅]", nm);
@@ -1091,6 +1104,7 @@ try {
 } catch (e) {
   console.error("[NAME PICKED ERROR]", e);
 }
+// --- FIM CAPTURA NOME ---
 
 
 
@@ -1119,18 +1133,31 @@ if (
 
   appendMessage(from, "assistant", msg);
   await sendText({ to: from, text: msg });
-// --- PICK NAME ONLY AT PRE-CONFIRMATION (robust version) ---
+// --- CAPTURA NOME NA PRÉ-CONFIRMAÇÃO (versão robusta) ---
 try {
-  // Só tenta extrair o nome SE a IA estiver perguntando explicitamente sobre o agendamento e citar "paciente"
-  if (/\bposso\s+agendar\b/i.test(answer) && /\bpaciente\b/i.test(answer)) {
-    // Zera qualquer nome capturado anteriormente (evita pegar frases erradas como "ela atende bradesco")
+  // Garante que o trecho só roda se a IA estiver emitindo a frase de pré-confirmação
+  if (
+    /\bposso\s+agendar\b/i.test(answer) &&
+    (/\bpaciente\b/i.test(answer) || /\bobrigado\b/i.test(answer))
+  ) {
+    // Zera nome anterior para evitar pegar frases ruins
     ensureConversation(from).patientName = null;
 
-    // Captura o nome entre "paciente" e "para o dia"/"no dia"/"às" etc.
-    const m = answer.match(/paciente\s+([A-Za-zÀ-ÿ'’. -]{3,80}?)(?=\s+(?:para|no)\s+dia|\s*,\s*para|\s+a[sà]\s)/i);
-    if (m?.[1]) {
-      const nm = m[1].replace(/\s+/g, " ").trim();
-      // exige nome + sobrenome (≥2 palavras)
+    let nm = null;
+
+    // Caso 1: "paciente Fulano da Silva para o dia..."
+    const m1 = answer.match(/paciente\s+([A-Za-zÀ-ÿ'’. -]{3,80}?)(?=\s+(?:para|no)\s+dia|\s*,\s*para|\s+a[sà]\s)/i);
+    if (m1?.[1]) nm = m1[1];
+
+    // Caso 2: "Obrigado pelas informações Fulano da Silva. Posso agendar a sua consulta..."
+    if (!nm) {
+      const m2 = answer.match(/informações[^\w]+([A-Za-zÀ-ÿ'’. -]{3,80}?)(?=\.\s*Posso\s+agendar)/i);
+      if (m2?.[1]) nm = m2[1];
+    }
+
+    if (nm) {
+      nm = nm.replace(/\s+/g, " ").trim();
+      // Só aceita se tiver nome + sobrenome
       if (nm.split(/\s+/).length >= 2) {
         ensureConversation(from).patientName = nm;
         console.log("[NAME PICKED - CONFIRMATION STAGE ✅]", nm);
@@ -1140,6 +1167,7 @@ try {
 } catch (e) {
   console.error("[NAME PICKED ERROR]", e);
 }
+// --- FIM CAPTURA NOME ---
 
   // evita relistar no MESMO turno e previne duplicação
   const c = ensureConversation(from);
@@ -1507,18 +1535,31 @@ try {
       // registra no histórico e envia a lista para permitir “opção N” e “N”
 appendMessage(from, "assistant", msg);
 await sendText({ to: from, text: msg });
-// --- PICK NAME ONLY AT PRE-CONFIRMATION (robust version) ---
+// --- CAPTURA NOME NA PRÉ-CONFIRMAÇÃO (versão robusta) ---
 try {
-  // Só tenta extrair o nome SE a IA estiver perguntando explicitamente sobre o agendamento e citar "paciente"
-  if (/\bposso\s+agendar\b/i.test(answer) && /\bpaciente\b/i.test(answer)) {
-    // Zera qualquer nome capturado anteriormente (evita pegar frases erradas como "ela atende bradesco")
+  // Garante que o trecho só roda se a IA estiver emitindo a frase de pré-confirmação
+  if (
+    /\bposso\s+agendar\b/i.test(answer) &&
+    (/\bpaciente\b/i.test(answer) || /\bobrigado\b/i.test(answer))
+  ) {
+    // Zera nome anterior para evitar pegar frases ruins
     ensureConversation(from).patientName = null;
 
-    // Captura o nome entre "paciente" e "para o dia"/"no dia"/"às" etc.
-    const m = answer.match(/paciente\s+([A-Za-zÀ-ÿ'’. -]{3,80}?)(?=\s+(?:para|no)\s+dia|\s*,\s*para|\s+a[sà]\s)/i);
-    if (m?.[1]) {
-      const nm = m[1].replace(/\s+/g, " ").trim();
-      // exige nome + sobrenome (≥2 palavras)
+    let nm = null;
+
+    // Caso 1: "paciente Fulano da Silva para o dia..."
+    const m1 = answer.match(/paciente\s+([A-Za-zÀ-ÿ'’. -]{3,80}?)(?=\s+(?:para|no)\s+dia|\s*,\s*para|\s+a[sà]\s)/i);
+    if (m1?.[1]) nm = m1[1];
+
+    // Caso 2: "Obrigado pelas informações Fulano da Silva. Posso agendar a sua consulta..."
+    if (!nm) {
+      const m2 = answer.match(/informações[^\w]+([A-Za-zÀ-ÿ'’. -]{3,80}?)(?=\.\s*Posso\s+agendar)/i);
+      if (m2?.[1]) nm = m2[1];
+    }
+
+    if (nm) {
+      nm = nm.replace(/\s+/g, " ").trim();
+      // Só aceita se tiver nome + sobrenome
       if (nm.split(/\s+/).length >= 2) {
         ensureConversation(from).patientName = nm;
         console.log("[NAME PICKED - CONFIRMATION STAGE ✅]", nm);
@@ -1528,6 +1569,7 @@ try {
 } catch (e) {
   console.error("[NAME PICKED ERROR]", e);
 }
+// --- FIM CAPTURA NOME ---
 
 // evita a IA relistar horários logo em seguida (apenas neste turno)
 const c = ensureConversation(from);
@@ -2106,18 +2148,31 @@ if (dow === 6 || dow === 0) {
   `Posso te enviar alternativas próximas dessa data ou procurar outra data que você prefira.`;
         appendMessage(from, "assistant", msg);
         await sendText({ to: from, text: msg });
-        // --- PICK NAME ONLY AT PRE-CONFIRMATION (robust version) ---
+        // --- CAPTURA NOME NA PRÉ-CONFIRMAÇÃO (versão robusta) ---
 try {
-  // Só tenta extrair o nome SE a IA estiver perguntando explicitamente sobre o agendamento e citar "paciente"
-  if (/\bposso\s+agendar\b/i.test(answer) && /\bpaciente\b/i.test(answer)) {
-    // Zera qualquer nome capturado anteriormente (evita pegar frases erradas como "ela atende bradesco")
+  // Garante que o trecho só roda se a IA estiver emitindo a frase de pré-confirmação
+  if (
+    /\bposso\s+agendar\b/i.test(answer) &&
+    (/\bpaciente\b/i.test(answer) || /\bobrigado\b/i.test(answer))
+  ) {
+    // Zera nome anterior para evitar pegar frases ruins
     ensureConversation(from).patientName = null;
 
-    // Captura o nome entre "paciente" e "para o dia"/"no dia"/"às" etc.
-    const m = answer.match(/paciente\s+([A-Za-zÀ-ÿ'’. -]{3,80}?)(?=\s+(?:para|no)\s+dia|\s*,\s*para|\s+a[sà]\s)/i);
-    if (m?.[1]) {
-      const nm = m[1].replace(/\s+/g, " ").trim();
-      // exige nome + sobrenome (≥2 palavras)
+    let nm = null;
+
+    // Caso 1: "paciente Fulano da Silva para o dia..."
+    const m1 = answer.match(/paciente\s+([A-Za-zÀ-ÿ'’. -]{3,80}?)(?=\s+(?:para|no)\s+dia|\s*,\s*para|\s+a[sà]\s)/i);
+    if (m1?.[1]) nm = m1[1];
+
+    // Caso 2: "Obrigado pelas informações Fulano da Silva. Posso agendar a sua consulta..."
+    if (!nm) {
+      const m2 = answer.match(/informações[^\w]+([A-Za-zÀ-ÿ'’. -]{3,80}?)(?=\.\s*Posso\s+agendar)/i);
+      if (m2?.[1]) nm = m2[1];
+    }
+
+    if (nm) {
+      nm = nm.replace(/\s+/g, " ").trim();
+      // Só aceita se tiver nome + sobrenome
       if (nm.split(/\s+/).length >= 2) {
         ensureConversation(from).patientName = nm;
         console.log("[NAME PICKED - CONFIRMATION STAGE ✅]", nm);
@@ -2127,6 +2182,7 @@ try {
 } catch (e) {
   console.error("[NAME PICKED ERROR]", e);
 }
+// --- FIM CAPTURA NOME ---
 
 
       } else {
@@ -2137,18 +2193,31 @@ try {
           `\n\nResponda com **opção N** (ex.: "opção 3") ou digite **data e horário** (ex.: "24/09 14:00").`;
         appendMessage(from, "assistant", msg);
         await sendText({ to: from, text: msg });
-        // --- PICK NAME ONLY AT PRE-CONFIRMATION (robust version) ---
+        // --- CAPTURA NOME NA PRÉ-CONFIRMAÇÃO (versão robusta) ---
 try {
-  // Só tenta extrair o nome SE a IA estiver perguntando explicitamente sobre o agendamento e citar "paciente"
-  if (/\bposso\s+agendar\b/i.test(answer) && /\bpaciente\b/i.test(answer)) {
-    // Zera qualquer nome capturado anteriormente (evita pegar frases erradas como "ela atende bradesco")
+  // Garante que o trecho só roda se a IA estiver emitindo a frase de pré-confirmação
+  if (
+    /\bposso\s+agendar\b/i.test(answer) &&
+    (/\bpaciente\b/i.test(answer) || /\bobrigado\b/i.test(answer))
+  ) {
+    // Zera nome anterior para evitar pegar frases ruins
     ensureConversation(from).patientName = null;
 
-    // Captura o nome entre "paciente" e "para o dia"/"no dia"/"às" etc.
-    const m = answer.match(/paciente\s+([A-Za-zÀ-ÿ'’. -]{3,80}?)(?=\s+(?:para|no)\s+dia|\s*,\s*para|\s+a[sà]\s)/i);
-    if (m?.[1]) {
-      const nm = m[1].replace(/\s+/g, " ").trim();
-      // exige nome + sobrenome (≥2 palavras)
+    let nm = null;
+
+    // Caso 1: "paciente Fulano da Silva para o dia..."
+    const m1 = answer.match(/paciente\s+([A-Za-zÀ-ÿ'’. -]{3,80}?)(?=\s+(?:para|no)\s+dia|\s*,\s*para|\s+a[sà]\s)/i);
+    if (m1?.[1]) nm = m1[1];
+
+    // Caso 2: "Obrigado pelas informações Fulano da Silva. Posso agendar a sua consulta..."
+    if (!nm) {
+      const m2 = answer.match(/informações[^\w]+([A-Za-zÀ-ÿ'’. -]{3,80}?)(?=\.\s*Posso\s+agendar)/i);
+      if (m2?.[1]) nm = m2[1];
+    }
+
+    if (nm) {
+      nm = nm.replace(/\s+/g, " ").trim();
+      // Só aceita se tiver nome + sobrenome
       if (nm.split(/\s+/).length >= 2) {
         ensureConversation(from).patientName = nm;
         console.log("[NAME PICKED - CONFIRMATION STAGE ✅]", nm);
@@ -2158,6 +2227,8 @@ try {
 } catch (e) {
   console.error("[NAME PICKED ERROR]", e);
 }
+// --- FIM CAPTURA NOME ---
+
 
       }
       return; // não deixa cair em outros blocos; evita travar o fluxo
@@ -2227,18 +2298,31 @@ if (dayStart.getTime() < today0.getTime()) {
   `Posso te enviar alternativas próximas dessa data ou procurar outra data que você prefira.`;
           appendMessage(from, "assistant", msg);
           await sendText({ to: from, text: msg });
-          // --- PICK NAME ONLY AT PRE-CONFIRMATION (robust version) ---
+          // --- CAPTURA NOME NA PRÉ-CONFIRMAÇÃO (versão robusta) ---
 try {
-  // Só tenta extrair o nome SE a IA estiver perguntando explicitamente sobre o agendamento e citar "paciente"
-  if (/\bposso\s+agendar\b/i.test(answer) && /\bpaciente\b/i.test(answer)) {
-    // Zera qualquer nome capturado anteriormente (evita pegar frases erradas como "ela atende bradesco")
+  // Garante que o trecho só roda se a IA estiver emitindo a frase de pré-confirmação
+  if (
+    /\bposso\s+agendar\b/i.test(answer) &&
+    (/\bpaciente\b/i.test(answer) || /\bobrigado\b/i.test(answer))
+  ) {
+    // Zera nome anterior para evitar pegar frases ruins
     ensureConversation(from).patientName = null;
 
-    // Captura o nome entre "paciente" e "para o dia"/"no dia"/"às" etc.
-    const m = answer.match(/paciente\s+([A-Za-zÀ-ÿ'’. -]{3,80}?)(?=\s+(?:para|no)\s+dia|\s*,\s*para|\s+a[sà]\s)/i);
-    if (m?.[1]) {
-      const nm = m[1].replace(/\s+/g, " ").trim();
-      // exige nome + sobrenome (≥2 palavras)
+    let nm = null;
+
+    // Caso 1: "paciente Fulano da Silva para o dia..."
+    const m1 = answer.match(/paciente\s+([A-Za-zÀ-ÿ'’. -]{3,80}?)(?=\s+(?:para|no)\s+dia|\s*,\s*para|\s+a[sà]\s)/i);
+    if (m1?.[1]) nm = m1[1];
+
+    // Caso 2: "Obrigado pelas informações Fulano da Silva. Posso agendar a sua consulta..."
+    if (!nm) {
+      const m2 = answer.match(/informações[^\w]+([A-Za-zÀ-ÿ'’. -]{3,80}?)(?=\.\s*Posso\s+agendar)/i);
+      if (m2?.[1]) nm = m2[1];
+    }
+
+    if (nm) {
+      nm = nm.replace(/\s+/g, " ").trim();
+      // Só aceita se tiver nome + sobrenome
       if (nm.split(/\s+/).length >= 2) {
         ensureConversation(from).patientName = nm;
         console.log("[NAME PICKED - CONFIRMATION STAGE ✅]", nm);
@@ -2248,6 +2332,8 @@ try {
 } catch (e) {
   console.error("[NAME PICKED ERROR]", e);
 }
+// --- FIM CAPTURA NOME ---
+
 
 
         } else {
@@ -2258,18 +2344,31 @@ try {
             `\n\nResponda com **opção N** (ex.: "opção 3") ou digite **data e horário** (ex.: "24/09 14:00").`;
           appendMessage(from, "assistant", msg);
           await sendText({ to: from, text: msg });
-          // --- PICK NAME ONLY AT PRE-CONFIRMATION (robust version) ---
+         // --- CAPTURA NOME NA PRÉ-CONFIRMAÇÃO (versão robusta) ---
 try {
-  // Só tenta extrair o nome SE a IA estiver perguntando explicitamente sobre o agendamento e citar "paciente"
-  if (/\bposso\s+agendar\b/i.test(answer) && /\bpaciente\b/i.test(answer)) {
-    // Zera qualquer nome capturado anteriormente (evita pegar frases erradas como "ela atende bradesco")
+  // Garante que o trecho só roda se a IA estiver emitindo a frase de pré-confirmação
+  if (
+    /\bposso\s+agendar\b/i.test(answer) &&
+    (/\bpaciente\b/i.test(answer) || /\bobrigado\b/i.test(answer))
+  ) {
+    // Zera nome anterior para evitar pegar frases ruins
     ensureConversation(from).patientName = null;
 
-    // Captura o nome entre "paciente" e "para o dia"/"no dia"/"às" etc.
-    const m = answer.match(/paciente\s+([A-Za-zÀ-ÿ'’. -]{3,80}?)(?=\s+(?:para|no)\s+dia|\s*,\s*para|\s+a[sà]\s)/i);
-    if (m?.[1]) {
-      const nm = m[1].replace(/\s+/g, " ").trim();
-      // exige nome + sobrenome (≥2 palavras)
+    let nm = null;
+
+    // Caso 1: "paciente Fulano da Silva para o dia..."
+    const m1 = answer.match(/paciente\s+([A-Za-zÀ-ÿ'’. -]{3,80}?)(?=\s+(?:para|no)\s+dia|\s*,\s*para|\s+a[sà]\s)/i);
+    if (m1?.[1]) nm = m1[1];
+
+    // Caso 2: "Obrigado pelas informações Fulano da Silva. Posso agendar a sua consulta..."
+    if (!nm) {
+      const m2 = answer.match(/informações[^\w]+([A-Za-zÀ-ÿ'’. -]{3,80}?)(?=\.\s*Posso\s+agendar)/i);
+      if (m2?.[1]) nm = m2[1];
+    }
+
+    if (nm) {
+      nm = nm.replace(/\s+/g, " ").trim();
+      // Só aceita se tiver nome + sobrenome
       if (nm.split(/\s+/).length >= 2) {
         ensureConversation(from).patientName = nm;
         console.log("[NAME PICKED - CONFIRMATION STAGE ✅]", nm);
@@ -2279,6 +2378,7 @@ try {
 } catch (e) {
   console.error("[NAME PICKED ERROR]", e);
 }
+// --- FIM CAPTURA NOME ---
 
 
         }
@@ -2434,18 +2534,31 @@ if (
 
       appendMessage(from, "assistant", msg);
       await sendText({ to: from, text: msg });
-      // --- PICK NAME ONLY AT PRE-CONFIRMATION (robust version) ---
+      // --- CAPTURA NOME NA PRÉ-CONFIRMAÇÃO (versão robusta) ---
 try {
-  // Só tenta extrair o nome SE a IA estiver perguntando explicitamente sobre o agendamento e citar "paciente"
-  if (/\bposso\s+agendar\b/i.test(answer) && /\bpaciente\b/i.test(answer)) {
-    // Zera qualquer nome capturado anteriormente (evita pegar frases erradas como "ela atende bradesco")
+  // Garante que o trecho só roda se a IA estiver emitindo a frase de pré-confirmação
+  if (
+    /\bposso\s+agendar\b/i.test(answer) &&
+    (/\bpaciente\b/i.test(answer) || /\bobrigado\b/i.test(answer))
+  ) {
+    // Zera nome anterior para evitar pegar frases ruins
     ensureConversation(from).patientName = null;
 
-    // Captura o nome entre "paciente" e "para o dia"/"no dia"/"às" etc.
-    const m = answer.match(/paciente\s+([A-Za-zÀ-ÿ'’. -]{3,80}?)(?=\s+(?:para|no)\s+dia|\s*,\s*para|\s+a[sà]\s)/i);
-    if (m?.[1]) {
-      const nm = m[1].replace(/\s+/g, " ").trim();
-      // exige nome + sobrenome (≥2 palavras)
+    let nm = null;
+
+    // Caso 1: "paciente Fulano da Silva para o dia..."
+    const m1 = answer.match(/paciente\s+([A-Za-zÀ-ÿ'’. -]{3,80}?)(?=\s+(?:para|no)\s+dia|\s*,\s*para|\s+a[sà]\s)/i);
+    if (m1?.[1]) nm = m1[1];
+
+    // Caso 2: "Obrigado pelas informações Fulano da Silva. Posso agendar a sua consulta..."
+    if (!nm) {
+      const m2 = answer.match(/informações[^\w]+([A-Za-zÀ-ÿ'’. -]{3,80}?)(?=\.\s*Posso\s+agendar)/i);
+      if (m2?.[1]) nm = m2[1];
+    }
+
+    if (nm) {
+      nm = nm.replace(/\s+/g, " ").trim();
+      // Só aceita se tiver nome + sobrenome
       if (nm.split(/\s+/).length >= 2) {
         ensureConversation(from).patientName = nm;
         console.log("[NAME PICKED - CONFIRMATION STAGE ✅]", nm);
@@ -2455,6 +2568,8 @@ try {
 } catch (e) {
   console.error("[NAME PICKED ERROR]", e);
 }
+// --- FIM CAPTURA NOME ---
+
 
     }
     return; // corta o fluxo aqui para não vir a mensagem genérica da IA
