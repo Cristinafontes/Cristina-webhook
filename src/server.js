@@ -483,7 +483,12 @@ function extractPatientInfo({ payload, phone, conversation }) {
   const msgs = conversation?.messages || [];
 
 // ====== NOME (prioriza texto digitado pelo paciente; fallback: nome do WhatsApp) ======
+// >>> Preferir o nome já fixado na pré-confirmação pela IA
 let name = null; // garante que 'name' exista no escopo
+if (conversation?.patientName && isLikelyNameLocal(conversation.patientName)) {
+  name = toTitleCaseLocal(String(conversation.patientName));
+  console.log("[NAME PICKED <- pre-confirm]", name);
+}
 
 // Helpers locais
 const toTitleCaseLocal = (str) =>
@@ -506,10 +511,11 @@ const isLikelyNameLocal = (s) => {
   // *** agora exige no mínimo 2 palavras ***
   if (parts.length < 2 || parts.length > 6) return false;
 
-  // blacklist reforçada
-  const BAN =
-    /\b(avalia[cç][aã]o|pr[eé][-\s]?anest|anestesia|medicina|dor|consulta|retorno|hor[áa]rio|modalidade|telefone|idade|end(?:ere[cç]o)?|paciente|motivo|preop|pré|pre)\b/i;
-  if (BAN.test(v)) return false;
+  // blacklist reforçada (evita frases operacionais e de orçamento/convênio)
+const BAN =
+  /\b(avalia[cç][aã]o|pr[eé][-\s]?anest|anestesia|medicina|dor|consulta|retorno|hor[áa]rio|modalidade|telefone|idade|end(?:ere[cç]o)?|paciente|motivo|preop|pr[eé]|pre|quanto|custa|valor|pre[cç]o|conv[eê]nio|plano|bradesco|unimed|amil|sul\s?-?\s?am[eé]rica|atende)\b/i;
+if (BAN.test(v)) return false;
+
 
   // dias e meses não são nome
   const WEEKDAYS = /\b(domingo|segunda|ter[cç]a|quarta|quinta|sexta|s[áa]bado)s?\b/i;
@@ -557,7 +563,7 @@ const extractNameLocal = (text) => {
 
   return null;
 };
-
+if (!name) {
 // 1) Varre histórico do usuário
 let nameFromUser = null;
 if (Array.isArray(msgs)) {
@@ -592,7 +598,7 @@ if (nameFromUser && isLikelyNameLocal(nameFromUser)) {
 if (name && name.split(/\s+/).filter(Boolean).length < 2) {
   name = "Paciente (WhatsApp)";
 }
-
+}
 // (opcional) log para ver nos Deploy Logs
 console.log("[NAME PICKED]", name);
   // ====== TELEFONE (prioriza o informado pelo paciente) ======
