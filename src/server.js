@@ -2673,7 +2673,10 @@ if (finalAnswer) {
     .replace(/vou confirmar.*?/gi, "")
     .replace(/vou conferir.*?/gi, "")
     .replace(/já te confirmo.*?/gi, "")
-    .trim();// === [ADICIONE AQUI] NAME PICKED NA PRÉ-CONFIRMAÇÃO ===
+    .trim();
+  
+  
+  // === [ADICIONE AQUI] NAME PICKED NA PRÉ-CONFIRMAÇÃO ===
 try {
   // Captura nome quando a IA diz "consulta do(a) paciente Fulano para o dia ..."
   const nameRegex = /consulta\s+do(?:\(a\))?\s+paciente\s+([\p{L}\p{M}\s.'-]{3,60}?)(?=\s+(?:para|pro|no)\s+dia)/iu;
@@ -2689,6 +2692,42 @@ try {
   console.error("Erro ao tentar capturar nome na pré-confirmação:", err);
 }
 // === [FIM DO BLOCO NOVO] ===
+// === [NAME PICKED NA PRÉ-CONFIRMAÇÃO] ===
+try {
+  // Variante A: "consulta do(a) paciente Fulano para o dia ..."
+  const rxPaciente =
+    /consulta\s+do(?:\(a\))?\s+paciente\s+([\p{L}\p{M}\s.'-]{3,60}?)(?=\s+(?:para|pro|no)\s+dia)/iu;
+
+  // Variante B: "Obrigado pelas informações Fulano. Posso agendar a sua consulta ..."
+  // Aceita com/sem colchetes ao redor do nome.
+  const rxObrigado =
+    /obrigado\s+pelas\s+informa[cç][õo]es[^\S\r\n]*\[?([\p{L}\p{M}\s.'-]{3,60}?)\]?\.\s*posso\s+agendar\s+a\s+sua\s+consulta/iu;
+
+  let picked = null;
+
+  if (finalAnswer) {
+    let m = rxPaciente.exec(finalAnswer);
+    if (m && m[1]) picked = m[1];
+
+    if (!picked) {
+      m = rxObrigado.exec(finalAnswer);
+      if (m && m[1]) picked = m[1];
+    }
+  }
+
+  if (picked) {
+    const nm = picked.replace(/\s+/g, " ").trim();
+    if (nm.split(/\s+/).length >= 2) {
+      const c = ensureConversation(from);
+      c.patientName = nm;      // <<< trava o nome para o resto do fluxo
+      c.updatedAt = Date.now();
+      console.log("[NAME PICKED @pre-confirm]", nm);
+    }
+  }
+} catch (err) {
+  console.error("Erro ao capturar nome na pré-confirmação:", err);
+}
+// === [FIM NAME PICKED] ===
 
   appendMessage(from, "assistant", finalAnswer);
   await sendText({ to: from, text: finalAnswer });
