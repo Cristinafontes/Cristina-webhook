@@ -2627,8 +2627,7 @@ if (busy) {
   return; // não cria evento, sai daqui
 }
 // Força usar o nome confirmado pela IA (se houver); senão, cai para o 'name' extraído
-const _lockedName = (ensureConversation(from)?.patientName || "").trim();
-const finalName = (_lockedName.split(/\s+/).length >= 2) ? _lockedName : name;
+
 
 await createCalendarEvent({
   summary,
