@@ -96,6 +96,48 @@ async function sendText({ to, text, skipDedupeOnce = false }) {
   // remove *negrito* e ***variações*** sem quebrar o texto
   msg = msg.replace(/\*{1,3}([^*]+)\*{1,3}/g, "$1");
 }
+// === [PICK NAME NA PRÉ-CONFIRMAÇÃO — INTERCEPTOR DE SAÍDA] ===
+try {
+  // Só roda se tivermos um telefone válido desta conversa
+  const convPhone = phone; // já definido no topo do sendText()
+  if (convPhone && typeof msg === "string") {
+    // Detecta as duas variantes da sua frase de pré-confirmação
+    const hasPreConfirm =
+      /\bposso\s+agendar\b/i.test(msg) &&
+      (/\bpaciente\b/i.test(msg) || /\bobrigad[oa]\b/i.test(msg));
+
+    if (hasPreConfirm) {
+      let picked = null;
+
+      // Variante A: “... consulta do(a) paciente Fulano da Silva para o dia ...”
+      const m1 = msg.match(
+        /consulta\s+do(?:\(?a\)?)?\s+paciente\s+([\p{L}\p{M}\s.'-]{3,80}?)(?=\s+(?:para|pro|no)\s+dia|\s*,\s*para|\s+a[sà]\s)/iu
+      );
+      if (m1?.[1]) picked = m1[1];
+
+      // Variante B: “Obrigado(a) pelas informações Fulano da Silva ... Posso agendar ...”
+      if (!picked) {
+        const m2 = msg.match(
+          /obrigad[oa]\s+pelas\s+informa[cç][õo]es[^\S\r\n]*\[?([\p{L}\p{M}\s.'-]{3,80}?)\]?[\s\S]{0,120}\bposso\s+agendar\b/iu
+        );
+        if (m2?.[1]) picked = m2[1];
+      }
+
+      if (picked) {
+        const nm = picked.replace(/\s+/g, " ").trim();
+        if (nm.split(/\s+/).length >= 2) {
+          const c = ensureConversation(convPhone);
+          c.patientName = nm;           // <<< trava o nome a partir da pré-confirmação
+          c.updatedAt = Date.now();
+          console.log("[NAME PICKED @sendText]", nm);
+        }
+      }
+    }
+  }
+} catch (e) {
+  console.error("Erro ao capturar nome (interceptor sendText):", e);
+}
+// === [FIM PICK NAME] ===
 
   // 1) Deduplicação: ignora se mesma mensagem foi enviada nos últimos X segundos
   try {
