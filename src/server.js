@@ -557,10 +557,15 @@ const extractNameLocal = (text) => {
 
   return null;
 };
+// [LOCK NAME]: se a IA já confirmou um nome na pré-confirmação, use só ele
+const locked = (conversation?.patientName || "").trim();
+if (locked && locked.split(/\s+/).length >= 2) {
+  name = locked; // <-- fixa o nome e evita procurar em frases soltas
+}
 
 // 1) Varre histórico do usuário
 let nameFromUser = null;
-if (Array.isArray(msgs)) {
+if (!name && Array.isArray(msgs)) {           // <--- alterado
   for (let i = msgs.length - 1; i >= 0 && !nameFromUser; i--) {
     const m = msgs[i];
     if (!m || m.role !== "user") continue;
@@ -569,13 +574,12 @@ if (Array.isArray(msgs)) {
 }
 
 // 2) Se ainda não achou, tenta no payload atual
-if (!nameFromUser) {
+if (!name && !nameFromUser) {                 // <--- alterado
   const lastText = (
     payload?.payload?.text ||
     payload?.payload?.title ||
     payload?.payload?.postbackText ||
-    payload?.text ||
-    ""
+    payload?.text || ""
   ) + "";
   nameFromUser = extractNameLocal(lastText);
 }
@@ -2617,25 +2621,29 @@ if (busy) {
   await sendText({ to: from, text: msg });
   return; // não cria evento, sai daqui
 }
+// Força usar o nome confirmado pela IA (se houver); senão, cai para o 'name' extraído
+const _lockedName = (ensureConversation(from)?.patientName || "").trim();
+const finalName = (_lockedName.split(/\s+/).length >= 2) ? _lockedName : name;
 
 await createCalendarEvent({
   summary,
   description:
     description +
     `\n#patient_phone:${onlyDigits(phoneFormatted)}` +
-    `\n#patient_name:${String(name || "").trim().toLowerCase()}`,
+    `\n#patient_name:${String(finalName || "").trim().toLowerCase()}`,
   startISO,
   endISO,
-  attendees: [], // inclua e-mails só com consentimento
+  attendees: [],
   location: process.env.CLINIC_ADDRESS || "Clínica",
   extendedProperties: {
     private: {
       patient_phone: onlyDigits(phoneFormatted),
-      patient_name: String(name || "").trim().toLowerCase(),
+      patient_name: String(finalName || "").trim().toLowerCase(),
       modality
     }
   }
 });
+
             // Marca que acabamos de agendar (anti re-confirmação pela IA nos próximos minutos)
 try {
   const c = ensureConversation(from);
