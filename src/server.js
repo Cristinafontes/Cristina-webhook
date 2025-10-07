@@ -871,7 +871,9 @@ ensureConversation(from).lastUserAt = Date.now();
 {
   const conv = ensureConversation(from);
   const picked = extractPatientInfo({ payload: p, phone: from, conversation: conv });
-  if (picked?.name && picked.name !== "Paciente (WhatsApp)") conv.patientName = picked.name;
+  if (!conv.patientNameLocked && picked?.name && picked.name !== "Paciente (WhatsApp)") {
+  conv.patientName = picked.name;
+}
   conv.lastKnownPhone = from;
 }
 
@@ -2497,6 +2499,47 @@ if (finalAnswer) {
     .replace(/já te confirmo.*?/gi, "")
     .trim();
 
+    // === [HOOK NOME NA PRÉ-CONFIRMAÇÃO DA CRISTINA] ===========================
+  try {
+    const text = String(finalAnswer || "");
+    const conv = ensureConversation(from);
+
+    // Só tenta capturar se ainda não "travamos" o nome antes
+    if (!conv.patientNameLocked) {
+      // 1) Caso "para outra pessoa": "... consulta do[a] paciente Fulano de Tal para o dia ..."
+      const reOutraPessoa =
+        /obrigad[ao][\s\S]{0,120}?posso\s+agendar\s+a?\s*consulta\s+do(?:\[a\])?\s+paciente\s+([\[\(]?)([A-Za-zÀ-ÿ'’. -]{3,80})(?:[\]\)])?\s+para\s+o\s+dia/i;
+
+      // 2) Caso "para a própria pessoa": "Obrigada pelas informações Fulano de Tal. Posso agendar a sua consulta ..."
+      const rePropriaPessoa =
+        /obrigad[ao][\s\S]{0,40}?pelas?\s+informa[cç][oõ]es[^\n,.:;]{0,10}\s+([A-Za-zÀ-ÿ'’. -]{3,80})\s*[,.\)]?\s*[\n ]*posso\s+agendar\s+a\s+sua\s+consulta\s+para\s+o\s+dia/i;
+
+      let picked = null;
+      let m = text.match(reOutraPessoa);
+      if (m && m[2]) picked = m[2].trim();
+
+      if (!picked) {
+        m = text.match(rePropriaPessoa);
+        if (m && m[1]) picked = m[1].trim();
+      }
+
+      // Saneamento + validação usando os mesmos critérios globais
+      if (picked && isLikelyName(picked)) { // usa helpers já definidos no arquivo
+        picked = toTitleCase(picked);
+
+        // Grava e "trava" para não ser sobrescrito
+        conv.patientName = picked;
+        conv.patientNameLocked = true;
+        conv.updatedAt = Date.now();
+        console.log("[NAME PICKED][CONFIRM PROMPT]", picked);
+      }
+    }
+  } catch (e) {
+    console.warn("name-hook error:", e?.message || e);
+  }
+  // === [FIM HOOK NOME] ======================================================
+
+  
   appendMessage(from, "assistant", finalAnswer);
   await sendText({ to: from, text: finalAnswer });
   // Marca que a Cristina já se apresentou (anti-reapresentação)
