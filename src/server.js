@@ -2505,8 +2505,8 @@ if (finalAnswer) {
         /obrigad[ao][\s\S]{0,120}?posso\s+agendar\s+a?\s*consulta\s+do(?:\[a\])?\s+paciente\s+([\[\(]?)([A-Za-zÀ-ÿ'’. -]{3,80})(?:[\]\)])?\s+para\s+o\s+dia/i;
 
             // 2) Para a própria pessoa (aceita "pelas informações", "pela confirmação", "pela resposta", ou sem essa parte)
-      const rePropriaPessoa =
-        /obrigad[ao][\s,]*?(?:(?:pel[ao]s?\s+)?(?:informa[cç][oõ]es|confirm[aã]ç(?:[aã]o|[oõ]es)?|respost[ao]s?|retorno(?:s)?)\b[^,.\n:;]{0,10}\s+)?([A-Za-zÀ-ÿ'’. -]{3,80})\s*[,.)]?\s*[\n ]*posso\s+agendar\s+a\s+sua\s+consulta\s+para\s+o\s+dia/i;
+            const rePropriaPessoa =
+        /obrigad[ao][\s,]*?(?:(?:pel[ao]s?\s+)?(?:informa[cç][oõ]es|confirm[aã]ç(?:[aã]o|[oõ]es)?|respost[ao]s?|retorno(?:s)?)\b\s*[,.:;!?-]\s*)?([A-Za-zÀ-ÿ'’ -]{3,80})\s*[,.)!?-]?\s*[\n ]*posso\s+agendar\s+a\s+sua\s+consulta\s+para\s+o\s+dia/i;
 
 
       let picked = null;
