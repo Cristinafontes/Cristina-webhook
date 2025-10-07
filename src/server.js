@@ -558,27 +558,12 @@ const extractNameLocal = (text) => {
   return null;
 };
 
-// 1) Varre histórico do usuário
+// 1) NÃO ler texto do usuário para nome (política: só prompt de pré-confirmação ou WhatsApp)
 let nameFromUser = null;
-if (Array.isArray(msgs)) {
-  for (let i = msgs.length - 1; i >= 0 && !nameFromUser; i--) {
-    const m = msgs[i];
-    if (!m || m.role !== "user") continue;
-    nameFromUser = extractNameLocal(m.content);
-  }
-}
 
-// 2) Se ainda não achou, tenta no payload atual
-if (!nameFromUser) {
-  const lastText = (
-    payload?.payload?.text ||
-    payload?.payload?.title ||
-    payload?.payload?.postbackText ||
-    payload?.text ||
-    ""
-  ) + "";
-  nameFromUser = extractNameLocal(lastText);
-}
+
+// 2) Desabilitado: não extrair nome do conteúdo da mensagem atual
+// (mantemos nameFromUser = null para cair no fallback do WhatsApp)
 
 // 3) Decide o nome final
 if (nameFromUser && isLikelyNameLocal(nameFromUser)) {
