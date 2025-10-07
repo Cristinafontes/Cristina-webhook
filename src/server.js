@@ -277,7 +277,16 @@ app.post("/webhook/zapi", async (req, res) => {
       payload: {
         type: "text",
         payload: { text: inboundText },
-        sender: { phone: from },
+        sender: {
+            phone: from,
+            name:
+                b?.senderName ||
+                b?.pushname ||
+                b?.message?.sender?.name ||
+                b?.message?.senderName ||
+                b?.message?.authorName ||
+                ""
+        },
         source: from
       }
     };
@@ -2497,7 +2506,7 @@ if (finalAnswer) {
 
       // 2) Caso "para a própria pessoa": "Obrigada pelas informações Fulano de Tal. Posso agendar a sua consulta ..."
       const rePropriaPessoa =
-        /obrigad[ao][\s\S]{0,40}?pelas?\s+informa[cç][oõ]es[^\n,.:;]{0,10}\s+([A-Za-zÀ-ÿ'’. -]{3,80})\s*[,.\)]?\s*[\n ]*posso\s+agendar\s+a\s+sua\s+consulta\s+para\s+o\s+dia/i;
+  /obrigad[ao][\s,]*?(?:pelas?\s+informa[cç][oõ]es[^\n,.:;]{0,10}\s+)?([A-Za-zÀ-ÿ'’. -]{3,80})\s*[,.\)]?\s*[\n ]*posso\s+agendar\s+a\s+sua\s+consulta\s+para\s+o\s+dia/i;
 
       let picked = null;
       let m = text.match(reOutraPessoa);
