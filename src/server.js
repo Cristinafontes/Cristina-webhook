@@ -2443,13 +2443,14 @@ if (busy) {
   await sendText({ to: from, text: msg });
   return; // não cria evento, sai daqui
 }
+const finalName = String((ensureConversation(from)?.patientName || name || "")).trim();
 
 await createCalendarEvent({
   summary,
   description:
     description +
     `\n#patient_phone:${onlyDigits(phoneFormatted)}` +
-    `\n#patient_name:${String(name || "").trim().toLowerCase()}`,
+    `\n#patient_name:${finalName.toLowerCase()}`,
   startISO,
   endISO,
   attendees: [], // inclua e-mails só com consentimento
@@ -2457,7 +2458,7 @@ await createCalendarEvent({
   extendedProperties: {
     private: {
       patient_phone: onlyDigits(phoneFormatted),
-      patient_name: String(name || "").trim().toLowerCase(),
+      patient_name: finalName.toLowerCase(),
       modality
     }
   }
@@ -2506,7 +2507,8 @@ if (finalAnswer) {
 
             // 2) Para a própria pessoa (aceita "pelas informações", "pela confirmação", "pela resposta", ou sem essa parte)
             const rePropriaPessoa =
-        /obrigad[ao][\s,]*?(?:(?:pel[ao]s?\s+)?(?:informa[cç][oõ]es|confirm[aã]ç(?:[aã]o|[oõ]es)?|respost[ao]s?|retorno(?:s)?)\b\s*[,.:;!?-]\s*)?([A-Za-zÀ-ÿ'’ -]{3,80})\s*[,.)!?-]?\s*[\n ]*posso\s+agendar\s+a\s+sua\s+consulta\s+para\s+o\s+dia/i;
+              /obrigad[ao][\s,]*?(?:(?:pel[ao]s?\s+)?(?:informa[cç][oõ]es|confirm[aã]ç(?:[aã]o|[oõ]es)?|respost[ao]s?|retorno(?:s)?)\b[^,.\n:;]{0,10}\s+)?([A-Za-zÀ-ÿ'’. -]{3,80})\s*[,.)!?-]?\s*[\n ]*posso\s+agendar\s+a?\s*sua\s+consulta\s+para\s+o\s+dia/i;
+
 
 
       let picked = null;
