@@ -1067,6 +1067,7 @@ if (
   /já te mando as opções/i.test(answer) ||
   /opções.*na mensagem a seguir/i.test(answer)
 ) {
+    console.log("[IA PROMETEU] Disparando opções automaticamente...");
   // pega próximos horários
   const slots = await listAvailableSlots({
     fromISO: new Date().toISOString(),
@@ -1142,13 +1143,11 @@ if (ctx.awaitingConfirm) {
     });
     return;
   } else {
-    // não entendi; reapresenta o pedido, sem travar
-    await sendText({
-      to: from,
-      text: "Só para confirmar: deseja mesmo **cancelar** esse horário? Responda **sim** ou **não**."
-    });
-    return;
-  }
+  // 👇 Chama a IA para tratar a dúvida e redirecionar corretamente
+  await aiAssistCancel({ from, userText });
+  return;
+}
+
 }
 
 // Se paciente respondeu "1", "2", etc. e já existe lista salva → processa aqui
@@ -1197,14 +1196,23 @@ if (candidateName && (/\s/.test(candidateName) || candidateName.replace(/\s+/g, 
   ctx.confirmed = false;
 }
     // 2) Tentar extrair data/hora (aceita "26/09", "26/09 09:00", "26-09 9h")
-    const mDate = userText.match(/(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?/);
-    const mTime = userText.match(/\b(\d{1,2})(?::|h)(\d{2})\b/);
     if (mDate) {
-      const dd = String(mDate[1]).padStart(2, "0");
-      const mm = String(mDate[2]).padStart(2, "0");
-      const yyyyFull = mDate[3] ? (String(mDate[3]).length === 2 ? 2000 + Number(mDate[3]) : Number(mDate[3])) : new Date().getFullYear();
-      ctx.dateISO = `${yyyyFull}-${mm}-${dd}T00:00:00`;
-    }
+  const dd = String(mDate[1]).padStart(2, "0");
+  const mm = String(mDate[2]).padStart(2, "0");
+  let yyyyFull = mDate[3] 
+    ? (String(mDate[3]).length === 2 ? 2000 + Number(mDate[3]) : Number(mDate[3])) 
+    : new Date().getFullYear();
+
+  // 👇 Ajuste automático para próximo ano se a data já passou
+  const today = new Date();
+  const candidate = new Date(`${yyyyFull}-${mm}-${dd}T00:00:00`);
+  if (candidate < today) {
+    yyyyFull += 1;
+  }
+
+  ctx.dateISO = `${yyyyFull}-${mm}-${dd}T00:00:00`;
+}
+
     if (mTime) {
       const hh = String(mTime[1]).padStart(2, "0");
       const mi = String(mTime[2]).padStart(2, "0");
@@ -1515,6 +1523,8 @@ try {
       const chosen = convMem.lastSlots[idx];
 
       if (!chosen) {
+            console.log("[OPÇÃO ESCOLHIDA]", chosen);
+    convMem.chosenSlot = chosen; // salva a escolha no contexto
         await sendText({
           to: from,
           text: "Número inválido. Responda com **opção N** conforme a lista atual, ou peça **mais** para ver outras opções."
@@ -1530,6 +1540,9 @@ try {
       }).formatToParts(dt).reduce((acc, p) => (acc[p.type] = p.value, acc), {});
       const ddmmhhmm = `${fmt.day}/${fmt.month} ${fmt.hour}:${fmt.minute}`;
       userText = `Quero agendar nesse horário: ${ddmmhhmm}`;
+          convMem.justPickedOption = true;
+    convMem.lastSlots = [];
+
       const convFlag = ensureConversation(from);
 convFlag.justPickedOption = true; // evita autolista no mesmo turno
   // evita relistar/repensar a mesma página de opções no próximo turno
