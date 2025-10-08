@@ -370,11 +370,17 @@ const SAO_PAULO_TZ = "America/Sao_Paulo";
 
 function reminderTimeVespera17(startISO) {
   const start = DateTime.fromISO(startISO, { zone: SAO_PAULO_TZ });
-  const vespera = start.minus({ days: 1 }).set({ hour: 17, minute: 0, second: 0, millisecond: 0 });
+
+  // lê variáveis do Railway ou usa 17:00 como padrão
+  const reminderHour = parseInt(process.env.REMINDER_HOUR || "17", 10);
+  const reminderMinute = parseInt(process.env.REMINDER_MINUTE || "0", 10);
+
+  const vespera = start
+    .minus({ days: 1 })
+    .set({ hour: reminderHour, minute: reminderMinute, second: 0, millisecond: 0 });
+
   return vespera;
 }
-
-// Agenda “one-shot” sem node-cron (usa setTimeout com TZ São Paulo)
 function scheduleOneShot(dateTime, jobFn) {
   const now = DateTime.now().setZone(SAO_PAULO_TZ);
   let ms = dateTime.diff(now, "milliseconds").milliseconds;
