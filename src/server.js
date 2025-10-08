@@ -371,13 +371,17 @@ const SAO_PAULO_TZ = "America/Sao_Paulo";
 function reminderTimeVespera17(startISO) {
   const start = DateTime.fromISO(startISO, { zone: SAO_PAULO_TZ });
 
-  // lê variáveis do Railway ou usa 17:00 como padrão
+  // Lê horário configurado via variável ou usa 17:00 padrão
   const reminderHour = parseInt(process.env.REMINDER_HOUR || "17", 10);
   const reminderMinute = parseInt(process.env.REMINDER_MINUTE || "0", 10);
 
   const vespera = start
     .minus({ days: 1 })
     .set({ hour: reminderHour, minute: reminderMinute, second: 0, millisecond: 0 });
+
+  console.log(
+    `[⏰ Disparo agendado] Consulta em ${start.toISO()} → Template será enviado em ${vespera.toISO()} (${reminderHour}:${reminderMinute})`
+  );
 
   return vespera;
 }
@@ -2642,16 +2646,24 @@ await createCalendarEvent({
   const phoneDigits = onlyDigits(phoneFormatted);
 
   scheduleOneShot(when, async () => {
-    await sendConfirmationTemplate({
-      to: phoneDigits,
-      bodyParams: [
-        { type: "text", text: pacienteNome },
-        { type: "text", text: dataHoraPt },
-        { type: "text", text: localOuMod },
-      ],
-      confirmPayload: `CONFIRMAR|${phoneDigits}|${startISOwithTime}`,
-      cancelPayload:  `CANCELAR|${phoneDigits}|${startISOwithTime}`,
-    });
+    // lê texto base do template e faz substituição simples
+let rawMessage = process.env.REMINDER_MESSAGE || "Olá {{nome}}, sua consulta é amanhã às {{hora}}.";
+rawMessage = rawMessage
+  .replace("{{nome}}", pacienteNome)
+  .replace("{{hora}}", dataHoraPt);
+
+// log para conferência
+console.log(`[📤 Enviando template]: ${rawMessage}`);
+
+await sendConfirmationTemplate({
+  to: phoneDigits,
+  bodyParams: [
+    { type: "text", text: rawMessage }
+  ],
+  confirmPayload: `CONFIRMAR|${phoneDigits}|${startISOwithTime}`,
+  cancelPayload:  `CANCELAR|${phoneDigits}|${startISOwithTime}`,
+});
+
   });
 } catch (e) {
   console.error("Falha ao agendar template de véspera:", e?.message || e);
