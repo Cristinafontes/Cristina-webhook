@@ -17,6 +17,11 @@ import { createCalendarEvent, findPatientEvents, cancelCalendarEvent } from "./g
 import { parseCandidateDateTime } from "./utils.esm.js";
 import { isSlotBlockedOrBusy } from "./availability.esm.js";
 import { listAvailableSlots } from "./slots.esm.js";
+
+import cron from "node-cron";
+import axios from "axios";
+import { DateTime } from "luxon";
+
 // <<< FIM CALENDÁRIO
 
 // === CONFIG QUE CONTROLA QUANTAS OPÇÕES MOSTRAR POR PÁGINA ===
@@ -361,6 +366,52 @@ function normalizePhoneForLookup(raw) {
   return d;
 }
 // === Utils de data ===
+
+const SAO_PAULO_TZ = "America/Sao_Paulo";
+
+function reminderTimeVespera17(startISO) {
+  const start = DateTime.fromISO(startISO, { zone: SAO_PAULO_TZ });
+  const vespera = start.minus({ days: 1 }).set({ hour: 17, minute: 0, second: 0, millisecond: 0 });
+  return vespera;
+}
+
+// Agenda um “one-shot” com node-cron para executar exatamente no horário calculado (TZ São Paulo)
+function scheduleOneShot(dateTime, jobFn) {
+  const expr = `${dateTime.minute} ${dateTime.hour} ${dateTime.day} ${dateTime.month} *`;
+  const task = cron.schedule(
+    expr,
+    async () => { try { await jobFn(); } finally { task.stop(); } },
+    { timezone: SAO_PAULO_TZ }
+  );
+  return task;
+}
+
+// Envia TEMPLATE aprovado via Z-API (ajuste NAMESPACE/NAME conforme seu template aprovado)
+async function sendConfirmationTemplate({ to, templateName = "confirma_consulta_vespera", language = "pt_BR", bodyParams = [], confirmPayload, cancelPayload }) {
+  const { ZAPI_BASE_URL, ZAPI_INSTANCE_ID, ZAPI_TOKEN } = process.env;
+  const url = `${ZAPI_BASE_URL}/instances/${ZAPI_INSTANCE_ID}/token/${ZAPI_TOKEN}/send-template`;
+  const payload = {
+    phone: String(to).replace(/\D/g, ""),
+    namespace: process.env.ZAPI_TEMPLATE_NAMESPACE || null,
+    name: templateName,
+    language,
+    components: [
+      { type: "body", parameters: bodyParams },
+      { type: "button", sub_type: "quick_reply", index: "0", parameters: [{ type: "payload", payload: confirmPayload }] },
+      { type: "button", sub_type: "quick_reply", index: "1", parameters: [{ type: "payload", payload: cancelPayload }] },
+    ],
+  };
+
+  try {
+    return await axios.post(url, payload);
+  } catch (e) {
+    console.error("[sendConfirmationTemplate] erro:", e?.response?.data || e);
+    // Fallback: texto simples caso o provedor recuse o template
+    return sendText({ to, text: "Confirme sua consulta: responda *CONFIRMAR* para confirmar ou *CANCELAR* para cancelar." });
+  }
+}
+
+
 function isWeekend(dateOrISO) {
   const d = new Date(dateOrISO);
   const dow = d.getDay(); // 0=dom, 6=sáb
@@ -830,6 +881,60 @@ async function handleInbound(req, res) {
     // Extrai texto
     let userText = "";
 
+    // === Intercepta payloads de botão/template (Z-API/Gupshup) ===
+try {
+  const btnPayloadRaw =
+    (p?.payload?.postbackData ?? p?.payload?.postbackText ?? p?.payload?.payload ?? p?.payload?.title ?? "") + "";
+  const PP = btnPayloadRaw.toUpperCase();
+
+  if (PP.startsWith("CONFIRMAR|")) {
+    // Ex.: CONFIRMAR|<phone>|<startISO>
+    const parts = btnPayloadRaw.split("|");
+    // const eventPhone = (parts[1] || "").replace(/\D/g, "");
+    // const eventStart = parts[2] || null;
+
+    // Marca “confirmado” e chama a IA para orientações
+    const conv = ensureConversation(from);
+    conv.confirmedAt = Date.now();
+
+    try {
+      await sendText({ to: from, text: "Confirmação recebida! Vou te enviar as orientações na sequência." });
+      // gatilho para a IA mandar orientações pré-consulta
+      await askCristina({ userText: "ORIENTACOES_PRE_CONSULTA", userPhone: String(from) });
+    } catch (e) {
+      console.error("[confirmar-template] erro:", e?.message || e);
+    }
+    return;
+  }
+
+  if (PP.startsWith("CANCELAR|")) {
+    // Joga direto no fluxo de cancelamento, preservando seu protocolo
+    const parts = btnPayloadRaw.split("|");
+    const eventPhone = (parts[1] || "").replace(/\D/g, "");
+    const eventStart = parts[2] || null;
+
+    const convMem = ensureConversation(from);
+    convMem.mode = "cancel";
+    convMem.after = null; // cancelamento simples
+    convMem.cancelCtx = {
+      phone: eventPhone || "",
+      name:  "",
+      dateISO: eventStart || null,
+      timeHHMM: null,
+      chosenEvent: null,
+      eventId: null,
+      awaitingConfirm: true,
+      confirmed: false,
+    };
+
+    await sendText({ to: from, text: "Posso cancelar sua consulta para este horário? Responda **sim** ou **não**." });
+    return;
+  }
+} catch (e) {
+  console.warn("[intercept-buttons] erro:", e?.message || e);
+}
+
+    
     // --- Anti-duplicação de entrada (antes de ler msgType) ---
 {
   const now = Date.now();
@@ -1122,7 +1227,37 @@ if (ctx.awaitingConfirm) {
     const yes = /\b(sim|pode|confirmo|confirmar|ok|isso|pode\s*cancelar|pode\s*sim|tudo\s*certo)\b/i.test(userText || "");
   const no  = /\b(n[aã]o|negativo|melhor\s*n[aã]o|cancelar\s*n[aã]o|pera|espera|a?guarda|deixa\s*quieto)\b/i.test(userText || "");
 
+  // Se veio do botão e já temos telefone/data, podemos cancelar direto ao “sim”
+  if (yes && !ctx.chosenEvent && ctx.phone) {
+    try {
+      const rawEvents = await findPatientEvents({
+        phone: ctx.phone,
+        name:  ctx.name || "",
+        daysBack: 180,
+        daysAhead: 365
+      });
 
+      let toCancel = rawEvents && rawEvents[0];
+      if (ctx.dateISO) {
+        const target = new Date(ctx.dateISO).getTime();
+        toCancel = rawEvents.sort((a,b) => Math.abs(new Date(a.startISO)-target) - Math.abs(new Date(b.startISO)-target))[0];
+      }
+
+      if (toCancel?.id) {
+        await cancelCalendarEvent({ eventId: toCancel.id });
+        await sendText({ to: from, text: `Pronto! Sua consulta está cancelada para ${toCancel.dayLabel} ${toCancel.timeLabel}.` });
+
+        const convMem2 = ensureConversation(from);
+        convMem2.mode = null; convMem2.after = null; convMem2.cancelCtx = null;
+        return;
+      }
+    } catch (e) {
+      console.error("[cancel fast-track] erro:", e?.message || e);
+    }
+    // fallback: se não achar, continua seu fluxo normal
+  }
+
+  
   if (yes && ctx.chosenEvent) {
   // confirmou: destrava confirmação e marca flag permanente
   ctx.awaitingConfirm = false;
@@ -2462,6 +2597,36 @@ await createCalendarEvent({
     }
   }
 });
+
+            try {
+  const startISOwithTime = startISO; // já está no formato ISO com hora
+
+  // Quando enviar: véspera 17:00 (TZ São Paulo)
+  const when = reminderTimeVespera17(startISOwithTime);
+
+  // Dados do paciente/modo/local para o template
+  const pacienteNome = (name && name !== "Paciente (WhatsApp)") ? name : "Paciente";
+  const dataHoraPt   = DateTime.fromISO(startISOwithTime, { zone: "America/Sao_Paulo" }).toFormat("dd/LL 'às' HH:mm");
+  const localOuMod   = (process.env.CLINIC_ADDRESS || "consultório") + (modality ? ` • ${modality}` : "");
+
+  const phoneDigits = onlyDigits(phoneFormatted);
+
+  scheduleOneShot(when, async () => {
+    await sendConfirmationTemplate({
+      to: phoneDigits,
+      bodyParams: [
+        { type: "text", text: pacienteNome },
+        { type: "text", text: dataHoraPt },
+        { type: "text", text: localOuMod },
+      ],
+      confirmPayload: `CONFIRMAR|${phoneDigits}|${startISOwithTime}`,
+      cancelPayload:  `CANCELAR|${phoneDigits}|${startISOwithTime}`,
+    });
+  });
+} catch (e) {
+  console.error("Falha ao agendar template de véspera:", e?.message || e);
+}
+
             // Marca que acabamos de agendar (anti re-confirmação pela IA nos próximos minutos)
 try {
   const c = ensureConversation(from);
@@ -2568,3 +2733,15 @@ app.post("/", handleInbound);        // fallback/alias
 // Start
 // =====================
 app.listen(PORT, () => console.log(`Server listening on :${PORT}`));
+
+// Reagenda confirmações da véspera para os próximos 30 dias ao iniciar (esqueleto, adapte se tiver listagem global de eventos)
+(async function resumeConfirmationJobs() {
+  try {
+    // Se você tiver uma função para listar todos os eventos futuros, use-a aqui e re-agende:
+    // Ex.: const events = await listAllUpcomingEvents({ daysAhead: 30 });
+    // for (const ev of events) { const when = reminderTimeVespera17(ev.startISO); if (when > DateTime.now().setZone("America/Sao_Paulo")) scheduleOneShot(when, ...); }
+  } catch (e) {
+    console.error("[resumeConfirmationJobs] erro:", e?.message || e);
+  }
+})();
+
