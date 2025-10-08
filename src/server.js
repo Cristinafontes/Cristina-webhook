@@ -18,7 +18,6 @@ import { parseCandidateDateTime } from "./utils.esm.js";
 import { isSlotBlockedOrBusy } from "./availability.esm.js";
 import { listAvailableSlots } from "./slots.esm.js";
 
-import cron from "node-cron";
 import axios from "axios";
 import { DateTime } from "luxon";
 
@@ -375,15 +374,40 @@ function reminderTimeVespera17(startISO) {
   return vespera;
 }
 
-// Agenda um “one-shot” com node-cron para executar exatamente no horário calculado (TZ São Paulo)
+// Agenda “one-shot” sem node-cron (usa setTimeout com TZ São Paulo)
 function scheduleOneShot(dateTime, jobFn) {
-  const expr = `${dateTime.minute} ${dateTime.hour} ${dateTime.day} ${dateTime.month} *`;
-  const task = cron.schedule(
-    expr,
-    async () => { try { await jobFn(); } finally { task.stop(); } },
-    { timezone: SAO_PAULO_TZ }
-  );
-  return task;
+  const now = DateTime.now().setZone(SAO_PAULO_TZ);
+  let ms = dateTime.diff(now, "milliseconds").milliseconds;
+
+  // se já passou, executa logo
+  if (ms <= 0) {
+    (async () => { try { await jobFn(); } catch (e) { console.error("[scheduleOneShot]", e); } })();
+    return { stop: () => {} };
+  }
+
+  // limita ao maior timeout suportado (~24 dias). Se for maior, vigia por intervalos.
+  const MAX_TIMEOUT = 2_147_000_000; // ~24,8 dias
+  if (ms > MAX_TIMEOUT) {
+    const iv = setInterval(async () => {
+      const now2 = DateTime.now().setZone(SAO_PAULO_TZ);
+      ms = dateTime.diff(now2, "milliseconds").milliseconds;
+      if (ms <= MAX_TIMEOUT) {
+        clearInterval(iv);
+        const t = setTimeout(async () => {
+          try { await jobFn(); } catch (e) { console.error("[scheduleOneShot]", e); }
+        }, Math.max(0, ms));
+        // expõe um stop que cancela ambos
+        return { stop: () => { try { clearInterval(iv); clearTimeout(t); } catch {} } };
+      }
+    }, 24 * 60 * 60 * 1000); // reavalia todo dia
+    return { stop: () => { try { clearInterval(iv); } catch {} } };
+  }
+
+  const t = setTimeout(async () => {
+    try { await jobFn(); } catch (e) { console.error("[scheduleOneShot]", e); }
+  }, ms);
+
+  return { stop: () => { try { clearTimeout(t); } catch {} } };
 }
 
 // Envia TEMPLATE aprovado via Z-API (ajuste NAMESPACE/NAME conforme seu template aprovado)
