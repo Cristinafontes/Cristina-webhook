@@ -372,7 +372,7 @@ function reminderTimeVespera17(startISO) {
   const start = DateTime.fromISO(startISO, { zone: SAO_PAULO_TZ });
 
   // 🧠 lê DAYS_BEFORE do Railway ou usa 1 como padrão
-  const daysBefore = parseInt(process.env.DAYS_BEFORE || "1", 10);
+  const daysBefore = parseInt(process.env.REMINDER_DAYS_BEFORE || "1", 10);
 
   // lê horário configurado (ou usa padrão 17:00)
   const reminderHour = parseInt(process.env.REMINDER_HOUR || "17", 10);
