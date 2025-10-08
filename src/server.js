@@ -371,20 +371,24 @@ const SAO_PAULO_TZ = "America/Sao_Paulo";
 function reminderTimeVespera17(startISO) {
   const start = DateTime.fromISO(startISO, { zone: SAO_PAULO_TZ });
 
-  // Lê horário configurado via variável ou usa 17:00 padrão
+  // 🧠 lê DAYS_BEFORE do Railway ou usa 1 como padrão
+  const daysBefore = parseInt(process.env.DAYS_BEFORE || "1", 10);
+
+  // lê horário configurado (ou usa padrão 17:00)
   const reminderHour = parseInt(process.env.REMINDER_HOUR || "17", 10);
   const reminderMinute = parseInt(process.env.REMINDER_MINUTE || "0", 10);
 
   const vespera = start
-    .minus({ days: 1 })
+    .minus({ days: daysBefore })
     .set({ hour: reminderHour, minute: reminderMinute, second: 0, millisecond: 0 });
 
   console.log(
-    `[⏰ Disparo agendado] Consulta em ${start.toISO()} → Template será enviado em ${vespera.toISO()} (${reminderHour}:${reminderMinute})`
+    `[⏰ Disparo agendado] Consulta em ${start.toISO()} → Template será enviado ${daysBefore} dia(s) antes, em ${vespera.toISO()} (${reminderHour}:${reminderMinute})`
   );
 
   return vespera;
 }
+
 function scheduleOneShot(dateTime, jobFn) {
   const now = DateTime.now().setZone(SAO_PAULO_TZ);
   let ms = dateTime.diff(now, "milliseconds").milliseconds;
