@@ -23,8 +23,8 @@ const REMINDER_MESSAGE =
   'Olá {{nome}}, lembrando da sua consulta {{modalidade}} no dia {{data}} às {{hora}}. ' +
   'Se estiver tudo certo, responda "Confirmo". Se precisar remarcar, digite "Remarcar".';
 
-const ZAPI_INSTANCE_ID = process.env.ZAPI_INSTANCE_ID;
-const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
+const ZAPI_INSTANCE_ID = process.env.ZAPI_INSTANCE_ID || process.env.ZAPI_INSTANCE;
+const ZAPI_TOKEN = process.env.ZAPI_TOKEN || process.env.ZAPI_ACCOUNT_TOKEN;
 // Opcional: se quiser sobrepor a base
 const ZAPI_BASE_URL = process.env.ZAPI_BASE_URL || "https://api.z-api.io";
 
