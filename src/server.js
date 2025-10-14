@@ -20,7 +20,6 @@ import { listAvailableSlots } from "./slots.esm.js";
 
 import axios from "axios";
 import { DateTime } from "luxon";
-import "./daily_sender.js";
 
 // <<< FIM CALENDÁRIO
 
