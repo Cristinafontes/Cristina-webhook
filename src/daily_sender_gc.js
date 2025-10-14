@@ -30,7 +30,35 @@ const CALENDAR_MARK_SENT = (process.env.GOOGLE_CALENDAR_MARK_SENT || "1") === "1
 // Z-API
 const ZAPI_BASE_URL = process.env.ZAPI_BASE_URL || "https://api.z-api.io";
 const ZAPI_INSTANCE_ID = process.env.ZAPI_INSTANCE_ID || process.env.ZAPI_INSTANCE;
-const ZAPI_TOKEN = process.env.ZAPI_TOKEN || process.env.ZAPI_ACCOUNT_TOKEN;
+// Token da instância (NÃO fazer fallback para o token da conta)
+const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
+// Token da CONTA (vai no header client-token)
+const ZAPI_ACCOUNT_TOKEN = process.env.ZAPI_ACCOUNT_TOKEN;
+
+// Checagem explícita (evita rodar sem credenciais)
+function mask(s) { return s ? s.slice(0,4) + '…' + s.slice(-4) : '(vazio)'; }
+for (const [k, v] of Object.entries({
+  ZAPI_BASE_URL, ZAPI_INSTANCE_ID, ZAPI_TOKEN, ZAPI_ACCOUNT_TOKEN
+})) {
+  if (!v || !String(v).trim()) {
+    console.error(`[FATAL][Worker] Env ${k} ausente/vazia`); process.exit(1);
+  }
+}
+console.log('[OK][Worker] Z-API envs:',
+  `instance=${ZAPI_INSTANCE_ID}`,
+  `tokenI=${mask(ZAPI_TOKEN)}`,
+  `tokenC=${mask(ZAPI_ACCOUNT_TOKEN)}`
+);
+
+// Cliente Axios ÚNICO da Z-API (sempre manda client-token)
+const zapi = axios.create({
+  baseURL: `${ZAPI_BASE_URL}/instances/${ZAPI_INSTANCE_ID}/token/${ZAPI_TOKEN}`,
+  headers: {
+    'client-token': ZAPI_ACCOUNT_TOKEN,
+    'Content-Type': 'application/json',
+  },
+  timeout: 15000,
+});
 
 // Ritmo humano / logs
 const HUMAN_DELAY_MIN_MS = parseInt(process.env.HUMAN_DELAY_MIN_MS || "2000", 10);
@@ -109,11 +137,9 @@ function fillTemplate(tpl, vars) {
     .replace(/{{\s*modalidade\s*}}/gi, vars.modalidade || "")
     .replace(/{{\s*local\s*}}/gi, vars.local || "");
 }
-
 async function sendViaZapiText(phoneE164, message) {
-  const url = `${ZAPI_BASE_URL}/instances/${ZAPI_INSTANCE_ID}/token/${ZAPI_TOKEN}/send-text`;
   const payload = { phone: phoneE164, message };
-  const { data } = await axios.post(url, payload, { timeout: 15000 });
+  const { data } = await zapi.post('/send-text', payload);
   return data;
 }
 
@@ -157,8 +183,8 @@ async function fetchEventsForTargetDay() {
 }
 
 async function runDailyReminder() {
-  if (!ZAPI_INSTANCE_ID || !ZAPI_TOKEN) {
-    console.error("[ERRO] Faltam ZAPI_INSTANCE_ID/ZAPI_INSTANCE ou ZAPI_TOKEN/ZAPI_ACCOUNT_TOKEN.");
+  if (!ZAPI_INSTANCE_ID || !ZAPI_TOKEN || !ZAPI_ACCOUNT_TOKEN) {
+    console.error("[ERRO] Faltam credenciais da Z-API (INSTANCE_ID, TOKEN da instância ou ACCOUNT_TOKEN).");
     return;
   }
   if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET || !process.env.GOOGLE_REFRESH_TOKEN) {
@@ -212,10 +238,14 @@ async function runDailyReminder() {
       sent++;
       if (ENABLE_LOGS) console.log(`[OK] ${telefone} | ${nome} | ${vars.data} ${vars.hora}`);
       await markSentOnEvent(ev, templateKey);
-    } catch (err) {
-      console.error(`[ERRO] ${telefone} | ${nome} | ${vars.data} ${vars.hora} ->`,
-        err?.response?.data || err?.message || err);
+        } catch (err) {
+      console.error(`[ERRO Z-API] ${telefone} | ${nome} | ${vars.data} ${vars.hora} ->`, {
+        status: err?.response?.status,
+        data: err?.response?.data,
+        msg: err?.message
+      });
     }
+
   }
 
   if (ENABLE_LOGS) console.log(`[DONE] Enviados: ${sent}`);
