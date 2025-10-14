@@ -27,7 +27,8 @@
     "openai": "^4.56.0",
     "raw-body": "^2.5.2",
     "node-cron": "^3.0.3",
-    "dayjs": "^1.11.11"
+    "dayjs": "^1.11.11",
+    "pg": "^8.11.5"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"
