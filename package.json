@@ -26,6 +26,8 @@
     "morgan": "^1.10.0",
     "openai": "^4.56.0",
     "raw-body": "^2.5.2"
+    "node-cron": "^3.0.3",
+    "dayjs": "^1.11.11"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"
