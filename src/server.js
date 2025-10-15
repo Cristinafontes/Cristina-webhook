@@ -958,32 +958,21 @@ try {
     conv.confirmedAt = Date.now();
     conv.phase = null; // 🔹 sai explicitamente da fase template
     try {
-      // 👉 Mensagem direta no formato pedido (sem reapresentar)
-  await sendText({
-    to: from,
-    text: "Perfeito! Consulta confirmada! As orientações pré-consulta são:"
-  });
+      try {
+  // 4ª parte opcional (vinda do Worker): instruções em base64
+  let hint = process.env.CRISTINA_INSTRUCTIONS || "Perfeito! Consulta confirmada! As orientações pré-consulta são:";
+  const instrB64 = parts[3] || "";
+  if (instrB64) {
+    try { hint = Buffer.from(instrB64, "base64").toString("utf8"); } catch {}
+  }
 
-  // 👉 Gatilho da IA com instruções claras de FORMATO (sem se reapresentar)
-  const hint =
-    "[ORIENTACOES_PRE_CONSULTA]\n" +
-    "NÃO se reapresente. Responda em BULLETS curtas (4–8 itens) logo após esta linha:\n" +
-    "• Documentos: levar documento com foto e carteirinha (se houver).\n" +
-    "• Exames: trazer exames e relatórios prévios relevantes.\n" +
-    "• Medicamentos: liste uso atual e informe alergias.\n" +
-    "• Jejum/analgésicos: siga as recomendações se aplicável.\n" +
-    "• Pontualidade: chegue 10–15 min antes.\n" +
-    "• Telemedicina (se for o caso): local silencioso, Wi-Fi estável, bateria >50%, câmera e microfone funcionando.\n" +
-    "Finalize com: 'Se surgir qualquer dúvida, me avise aqui 🙂'.";
-
-  await askCristina({
-    userText: hint,
-    userPhone: String(from)
-  });
+  // Dispara a IA já com o texto final (sem reapresentar)
+  await askCristina({ userText: hint, userPhone: String(from) });
 } catch (e) {
   console.error("[confirmar-template] erro:", e?.message || e);
 }
-    return;
+return;
+
   }
 
   if (PP.startsWith("CANCELAR|")) {
@@ -2813,9 +2802,15 @@ await sendConfirmationTemplate({
   bodyParams: [
     { type: "text", text: rawMessage }
   ],
-  confirmPayload: `CONFIRMAR|${phoneDigits}|${startISOwithTime}`,
+    // Instruções centralizadas no WORKER:
+  const instr = (process.env.CRISTINA_INSTRUCTIONS || "Perfeito! Consulta confirmada! As orientações pré-consulta são:").trim();
+  // Base64 para caber no payload do botão
+  const instrB64 = Buffer.from(instr, "utf8").toString("base64");
+
+  confirmPayload: `CONFIRMAR|${phoneDigits}|${startISOwithTime}|${instrB64}`,
   cancelPayload:  `CANCELAR|${phoneDigits}|${startISOwithTime}`,
 });
+
 
   });
 } catch (e) {
