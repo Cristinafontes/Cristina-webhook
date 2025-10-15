@@ -988,7 +988,7 @@ try {
   _lastInboundByPhone.set(from, { textNorm, at: now });
 }
 
-    if (msgType === "text") {
+        if (msgType === "text") {
       userText = p?.payload?.text || "";
     } else if (msgType === "button_reply" || msgType === "list_reply") {
       userText = p?.payload?.title || p?.payload?.postbackText || "";
@@ -1000,7 +1000,63 @@ try {
       return;
     }
 
+    // === ROUTER de respostas do TEMPLATE (1/2/3 por TEXTO) ===
+    {
+      const t = String(userText || "")
+        .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase().trim();
+
+      const says1 = /\b(1|confirmar|confirmo|pode\s*deixar\s*certo|pode\s*confirmar|ok\s*pode|tudo\s*certo)\b/.test(t);
+      const says2 = /\b(2|reagendar|remarcar|mudar\s*horario|trocar\s*horario|adiar)\b/.test(t);
+      const says3 = /\b(3|cancelar|desmarcar)\b/.test(t);
+
+      if (says1) {
+        // Igual ao tratamento do botão CONFIRMAR|… → chama IA contextualizada
+        await sendText({ to: from, text: "Confirmação recebida! Vou te enviar as orientações na sequência." });
+        await askCristina({ userText: "ORIENTACOES_PRE_CONSULTA", userPhone: String(from) });
+        return;
+      }
+
+      if (says2) {
+        // Inicia fluxo direto na etapa: “posso cancelar sua consulta no dia...?”
+        const convMem = ensureConversation(from);
+        convMem.mode = "cancel";
+        convMem.after = "schedule"; // depois do cancel, vamos agendar
+        convMem.cancelCtx = {
+          phone: normalizePhoneForLookup(conversations.get(from)?.lastKnownPhone || from) || "",
+          name: "",
+          dateISO: null,
+          timeHHMM: null,
+          chosenEvent: null,
+          awaitingConfirm: true,
+          confirmed: false,
+        };
+        await sendText({ to: from, text: "Posso cancelar sua consulta para este horário? Responda **sim** ou **não**." });
+        return;
+      }
+
+      if (says3) {
+        // Inicia fluxo direto na etapa do cancelamento (sim/não)
+        const convMem = ensureConversation(from);
+        convMem.mode = "cancel";
+        convMem.after = null; // cancel simples
+        convMem.cancelCtx = {
+          phone: normalizePhoneForLookup(conversations.get(from)?.lastKnownPhone || from) || "",
+          name: "",
+          dateISO: null,
+          timeHHMM: null,
+          chosenEvent: null,
+          awaitingConfirm: true,
+          confirmed: false,
+        };
+        await sendText({ to: from, text: "Posso cancelar sua consulta para este horário? Responda **sim** ou **não**." });
+        return;
+      }
+    }
+    // === FIM ROUTER TEMPLATE ===
+
     const trimmed = (userText || "").trim().toLowerCase();
+
     // Marca que o paciente acabou de falar (libera respostas mesmo após longos silêncios)
 ensureConversation(from).lastUserAt = Date.now();
 
@@ -1576,6 +1632,12 @@ try {
     const cancelText = `Pronto! Sua consulta com a Dra. Jenifer está cancelada para o dia ${dd}/${yy} ${hhmm}.`;
 
     await sendText({ to: from, text: cancelText });
+        // Mensagem de disponibilidade pós-cancelamento
+    await sendText({
+      to: from,
+      text: "Se precisar **reagendar** ou tiver alguma **dúvida sobre a consulta**, estou à disposição. 😊"
+    });
+
 // --- PREFILL para reagendamento após cancelamento ---
 try {
   const ev = ctx?.chosenEvent || {};
