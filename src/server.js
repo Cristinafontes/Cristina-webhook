@@ -958,12 +958,31 @@ try {
     conv.confirmedAt = Date.now();
     conv.phase = null; // 🔹 sai explicitamente da fase template
     try {
-      await sendText({ to: from, text: "Confirmação recebida! Vou te enviar as orientações na sequência." });
-      // gatilho para a IA mandar orientações pré-consulta
-      await askCristina({ userText: "ORIENTACOES_PRE_CONSULTA", userPhone: String(from) });
-    } catch (e) {
-      console.error("[confirmar-template] erro:", e?.message || e);
-    }
+      // 👉 Mensagem direta no formato pedido (sem reapresentar)
+  await sendText({
+    to: from,
+    text: "Perfeito! Consulta confirmada! As orientações pré-consulta são:"
+  });
+
+  // 👉 Gatilho da IA com instruções claras de FORMATO (sem se reapresentar)
+  const hint =
+    "[ORIENTACOES_PRE_CONSULTA]\n" +
+    "NÃO se reapresente. Responda em BULLETS curtas (4–8 itens) logo após esta linha:\n" +
+    "• Documentos: levar documento com foto e carteirinha (se houver).\n" +
+    "• Exames: trazer exames e relatórios prévios relevantes.\n" +
+    "• Medicamentos: liste uso atual e informe alergias.\n" +
+    "• Jejum/analgésicos: siga as recomendações se aplicável.\n" +
+    "• Pontualidade: chegue 10–15 min antes.\n" +
+    "• Telemedicina (se for o caso): local silencioso, Wi-Fi estável, bateria >50%, câmera e microfone funcionando.\n" +
+    "Finalize com: 'Se surgir qualquer dúvida, me avise aqui 🙂'.";
+
+  await askCristina({
+    userText: hint,
+    userPhone: String(from)
+  });
+} catch (e) {
+  console.error("[confirmar-template] erro:", e?.message || e);
+}
     return;
   }
 
@@ -1087,12 +1106,29 @@ if (isPureGreeting) {
       } catch {}
 
       try {
-        await sendText({ to: from, text: "Perfeito! Confirmação recebida ✅. Vou te enviar as **orientações pré-consulta** agora." });
-        // Gatilho da sua IA (já existente) para orientar sem se reapresentar
-        await askCristina({ userText: "ORIENTACOES_PRE_CONSULTA", userPhone: String(from) });
-      } catch (e) {
-        console.error("[template-confirm] erro:", e?.message || e);
-      }
+       await sendText({
+    to: from,
+    text: "Perfeito! Consulta confirmada! As orientações pré-consulta são:"
+  });
+
+  const hint =
+    "[ORIENTACOES_PRE_CONSULTA]\n" +
+    "NÃO se reapresente. Responda em BULLETS curtas (4–8 itens) logo após esta linha:\n" +
+    "• Documentos: levar documento com foto e carteirinha (se houver).\n" +
+    "• Exames: trazer exames e relatórios prévios relevantes.\n" +
+    "• Medicamentos: liste uso atual e informe alergias.\n" +
+    "• Jejum/analgésicos: seguir orientações quando indicado.\n" +
+    "• Pontualidade: chegar 10–15 min antes.\n" +
+    "• Telemedicina (se for o caso): local silencioso, Wi-Fi estável, bateria >50%, câmera e microfone funcionando.\n" +
+    "Finalize com: 'Se surgir qualquer dúvida, me avise aqui 🙂'.";
+
+  await askCristina({
+    userText: hint,
+    userPhone: String(from)
+  });
+} catch (e) {
+  console.error("[template-confirm] erro:", e?.message || e);
+}
       return; // importantíssimo: não deixa cair nos outros fluxos
     }
 
