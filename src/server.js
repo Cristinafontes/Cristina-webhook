@@ -925,25 +925,32 @@ try {
     (p?.payload?.postbackData ?? p?.payload?.postbackText ?? p?.payload?.payload ?? p?.payload?.title ?? "") + "";
   const PP = btnPayloadRaw.toUpperCase();
 
-  if (PP.startsWith("CONFIRMAR|")) {
+    if (PP.startsWith("CONFIRMAR|")) {
     // Ex.: CONFIRMAR|<phone>|<startISO>
     const parts = btnPayloadRaw.split("|");
-    // const eventPhone = (parts[1] || "").replace(/\D/g, "");
-    // const eventStart = parts[2] || null;
 
-    // Marca “confirmado” e chama a IA para orientações
+    // Marca “confirmado”
     const conv = ensureConversation(from);
     conv.confirmedAt = Date.now();
 
     try {
       await sendText({ to: from, text: "Confirmação recebida! Vou te enviar as orientações na sequência." });
-      // gatilho para a IA mandar orientações pré-consulta
-      await askCristina({ userText: "ORIENTACOES_PRE_CONSULTA", userPhone: String(from) });
+
+      // Garante "atividade recente" para não cair em guardas de silêncio
+      ensureConversation(from).lastUserAt = Date.now();
+
+      // Pega a RESPOSTA da IA e ENVIA
+      const answer = await askCristina({ userText: "ORIENTACOES_PRE_CONSULTA", userPhone: String(from) });
+      if (answer) {
+        appendMessage(from, "assistant", answer);
+        await sendText({ to: from, text: answer, skipDedupeOnce: true });
+      }
     } catch (e) {
       console.error("[confirmar-template] erro:", e?.message || e);
     }
     return;
   }
+
 
   if (PP.startsWith("CANCELAR|")) {
     // Joga direto no fluxo de cancelamento, preservando seu protocolo
@@ -1010,12 +1017,22 @@ try {
       const says2 = /\b(2|reagendar|remarcar|mudar\s*horario|trocar\s*horario|adiar)\b/.test(t);
       const says3 = /\b(3|cancelar|desmarcar)\b/.test(t);
 
-      if (says1) {
-        // Igual ao tratamento do botão CONFIRMAR|… → chama IA contextualizada
+            if (says1) {
+        // Confirmação por TEXTO → manda a frase curta e em seguida as orientações da IA
         await sendText({ to: from, text: "Confirmação recebida! Vou te enviar as orientações na sequência." });
-        await askCristina({ userText: "ORIENTACOES_PRE_CONSULTA", userPhone: String(from) });
+
+        // Marca que o paciente acabou de falar (evita bloqueio por silêncio)
+        ensureConversation(from).lastUserAt = Date.now();
+
+        // Chama a IA e ENVIA a resposta (igual fazemos no aiAssistCancel)
+        const answer = await askCristina({ userText: "ORIENTACOES_PRE_CONSULTA", userPhone: String(from) });
+        if (answer) {
+          appendMessage(from, "assistant", answer);
+          await sendText({ to: from, text: answer, skipDedupeOnce: true });
+        }
         return;
       }
+
 
       if (says2) {
         // Inicia fluxo direto na etapa: “posso cancelar sua consulta no dia...?”
