@@ -441,7 +441,24 @@ async function sendConfirmationTemplate({ to, templateName = "confirma_consulta_
   };
 
   try {
-    return await axios.post(url, payload);
+    const resp = await axios.post(url, payload);
+
+    // 🔒 Marca fase "reminder_template" por até 48h para isolar respostas "1/2"
+    try {
+      const phone = String(to).replace(/\D/g, "");
+      const conv = ensureConversation(phone);
+      conv.phase = "reminder_template";
+      // tenta extrair o startISO do confirmPayload: "CONFIRMAR|<phone>|<startISO>"
+      const isoFromPayload = (confirmPayload || "").split("|")[2] || null;
+      conv.templateCtx = {
+        startISO: isoFromPayload || null,
+        setAt: Date.now(),
+        activeUntil: Date.now() + 48 * 60 * 60 * 1000 // 48h
+      };
+      conv.updatedAt = Date.now();
+    } catch {}
+
+    return resp;
   } catch (e) {
     console.error("[sendConfirmationTemplate] erro:", e?.response?.data || e);
     // Fallback: texto simples caso o provedor recuse o template
@@ -934,7 +951,7 @@ try {
     // Marca “confirmado” e chama a IA para orientações
     const conv = ensureConversation(from);
     conv.confirmedAt = Date.now();
-
+    conv.phase = null; // 🔹 sai explicitamente da fase template
     try {
       await sendText({ to: from, text: "Confirmação recebida! Vou te enviar as orientações na sequência." });
       // gatilho para a IA mandar orientações pré-consulta
@@ -1028,7 +1045,78 @@ if (isPureGreeting) {
   // (sem return)
 }
 
-  
+ // === FASE DO TEMPLATE (isolada) — confirmar/cancelar sem confundir outros fluxos ===
+{
+  const conv = ensureConversation(from);
+  const inTemplate =
+    conv?.phase === "reminder_template" &&
+    (!conv?.templateCtx?.activeUntil || Date.now() <= conv.templateCtx.activeUntil);
+
+  if (inTemplate) {
+    const norm = String(userText || "")
+      .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase();
+
+    const saidConfirm =
+      /\b(1|op[cç][aã]o\s*1|confirmar|confirmo|pode\s*deixar\s*certo|ok|pode\s*sim|sim)\b/.test(norm);
+
+    const saidCancel =
+      /\b(2|op[cç][aã]o\s*2|cancelar|quero\s*cancelar|desmarcar)\b/.test(norm);
+
+    // ↳ CONFIRMAR → chama IA contextualizada para orientações (sem se reapresentar)
+    if (saidConfirm) {
+      // limpa fase para não reprocessar
+      conv.phase = null; 
+      try {
+        await sendText({ to: from, text: "Perfeito! Confirmação recebida ✅. Vou te enviar as **orientações pré-consulta** agora." });
+        // Gatilho da sua IA (já existente) para orientar sem se reapresentar
+        await askCristina({ userText: "ORIENTACOES_PRE_CONSULTA", userPhone: String(from) });
+      } catch (e) {
+        console.error("[template-confirm] erro:", e?.message || e);
+      }
+      return; // importantíssimo: não deixa cair nos outros fluxos
+    }
+
+    // ↳ CANCELAR → entra direto no modo cancelamento pedindo confirmação "sim/não"
+    if (saidCancel) {
+      conv.phase = null; // sai da fase template
+      conv.mode = "cancel";
+      conv.after = null;
+
+      // Prefill do horário a partir do template (se disponível)
+      const ctx = conv.cancelCtx = {
+        phone: normalizePhoneForLookup(from),
+        name:  conv.patientName || "",
+        dateISO: conv?.templateCtx?.startISO || null,
+        timeHHMM: null,
+        chosenEvent: null,
+        eventId: null,
+        awaitingConfirm: true,
+        confirmed: false,
+      };
+
+      // Mensagem já no formato que o seu cancelamento espera
+      let pergunta = "Posso cancelar sua consulta para este horário? Responda **sim** ou **não**.";
+      try {
+        if (ctx.dateISO) {
+          const d = new Date(ctx.dateISO);
+          const dd = String(d.getDate()).padStart(2, "0");
+          const mm = String(d.getMonth()+1).padStart(2, "0");
+          const hh = String(d.getHours()).padStart(2, "0");
+          const mi = String(d.getMinutes()).padStart(2, "0");
+          pergunta = `Posso cancelar sua consulta no dia **${dd}/${mm} às ${hh}:${mi}**? Responda **sim** ou **não**.`;
+        }
+      } catch {}
+      await sendText({ to: from, text: pergunta });
+
+      return; // não deixa prosseguir para outras intenções
+    }
+
+    // Se respondeu algo fora 1/2/confirmar/cancelar, deixa seguir para IA normal
+    // (sem quebrar fase atual de template — não damos return)
+  }
+}
+ 
 // === INTENÇÃO DE CANCELAMENTO / REAGENDAMENTO ===
 {
   const convMem = ensureConversation(from);
