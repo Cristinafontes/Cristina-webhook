@@ -958,7 +958,6 @@ try {
     conv.confirmedAt = Date.now();
     conv.phase = null; // 🔹 sai explicitamente da fase template
     try {
-      try {
   // 4ª parte opcional (vinda do Worker): instruções em base64
   let hint = process.env.CRISTINA_INSTRUCTIONS || "Perfeito! Consulta confirmada! As orientações pré-consulta são:";
   const instrB64 = parts[3] || "";
