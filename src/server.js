@@ -443,19 +443,24 @@ async function sendConfirmationTemplate({ to, templateName = "confirma_consulta_
   try {
     const resp = await axios.post(url, payload);
 
-    // 🔒 Marca fase "reminder_template" por até 48h para isolar respostas "1/2"
+        // 🔒 Marca fase "reminder_template" por até 48h para isolar respostas "1/2" (com e sem 55)
     try {
-      const phone = String(to).replace(/\D/g, "");
-      const conv = ensureConversation(phone);
-      conv.phase = "reminder_template";
-      // tenta extrair o startISO do confirmPayload: "CONFIRMAR|<phone>|<startISO>"
+      const raw = String(to).replace(/\D/g, "");
+      const withDDI = raw.startsWith("55") ? raw : ("55" + raw);
+      const noDDI   = raw.startsWith("55") ? raw.slice(2) : raw;
+
       const isoFromPayload = (confirmPayload || "").split("|")[2] || null;
-      conv.templateCtx = {
-        startISO: isoFromPayload || null,
-        setAt: Date.now(),
-        activeUntil: Date.now() + 48 * 60 * 60 * 1000 // 48h
-      };
-      conv.updatedAt = Date.now();
+
+      for (const key of [withDDI, noDDI]) {
+        const conv = ensureConversation(key);
+        conv.phase = "reminder_template";
+        conv.templateCtx = {
+          startISO: isoFromPayload || null,
+          setAt: Date.now(),
+          activeUntil: Date.now() + 48 * 60 * 60 * 1000 // 48h
+        };
+        conv.updatedAt = Date.now();
+      }
     } catch {}
 
     return resp;
@@ -1047,9 +1052,17 @@ if (isPureGreeting) {
 
  // === FASE DO TEMPLATE (isolada) — confirmar/cancelar sem confundir outros fluxos ===
 {
-  const conv = ensureConversation(from);
+  const keyA = String(from).replace(/\D/g, "");
+  const keyB = keyA.startsWith("55") ? keyA.slice(2) : ("55" + keyA);
+
+  // tenta achar a conversa em qualquer chave
+  const convA = getConversation(keyA);
+  const convB = getConversation(keyB);
+  const conv  = convA || convB || ensureConversation(keyA);
+
   const inTemplate =
     conv?.phase === "reminder_template" &&
+
     (!conv?.templateCtx?.activeUntil || Date.now() <= conv.templateCtx.activeUntil);
 
   if (inTemplate) {
@@ -1066,7 +1079,13 @@ if (isPureGreeting) {
     // ↳ CONFIRMAR → chama IA contextualizada para orientações (sem se reapresentar)
     if (saidConfirm) {
       // limpa fase para não reprocessar
-      conv.phase = null; 
+      conv.phase = null;
+            // mantém as duas chaves sincronizadas
+      try {
+        const a = ensureConversation(keyA); a.phase = null;
+        const b = ensureConversation(keyB); b.phase = null;
+      } catch {}
+
       try {
         await sendText({ to: from, text: "Perfeito! Confirmação recebida ✅. Vou te enviar as **orientações pré-consulta** agora." });
         // Gatilho da sua IA (já existente) para orientar sem se reapresentar
@@ -1080,6 +1099,12 @@ if (isPureGreeting) {
     // ↳ CANCELAR → entra direto no modo cancelamento pedindo confirmação "sim/não"
     if (saidCancel) {
       conv.phase = null; // sai da fase template
+            // mantém as duas chaves sincronizadas
+      try {
+        const a = ensureConversation(keyA); a.phase = null; a.mode = "cancel"; a.after = null; a.cancelCtx = ctx;
+        const b = ensureConversation(keyB); b.phase = null; b.mode  = "cancel"; b.after  = null; b.cancelCtx  = ctx;
+      } catch {}
+
       conv.mode = "cancel";
       conv.after = null;
 
