@@ -941,78 +941,7 @@ async function handleInbound(req, res) {
     // Extrai texto
     let userText = "";
 
-    // === Intercepta payloads de botão/template (Z-API/Gupshup) ===
-try {
-  const btnPayloadRaw =
-    (p?.payload?.postbackData ?? p?.payload?.postbackText ?? p?.payload?.payload ?? p?.payload?.title ?? "") + "";
-  const PP = btnPayloadRaw.toUpperCase();
-
-  if (PP.startsWith("CONFIRMAR|")) {
-    // Ex.: CONFIRMAR|<phone>|<startISO>
-    const parts = btnPayloadRaw.split("|");
-    // const eventPhone = (parts[1] || "").replace(/\D/g, "");
-    // const eventStart = parts[2] || null;
-
-    // Marca “confirmado” e chama a IA para orientações
-    const conv = ensureConversation(from);
-    conv.confirmedAt = Date.now();
-    conv.phase = null; // 🔹 sai explicitamente da fase template
-    try {
-      // 👉 Mensagem direta no formato pedido (sem reapresentar)
-  await sendText({
-    to: from,
-    text: "Perfeito! Consulta confirmada! As orientações pré-consulta são:"
-  });
-
-  // 👉 Gatilho da IA com instruções claras de FORMATO (sem se reapresentar)
-  const hint =
-    "[ORIENTACOES_PRE_CONSULTA]\n" +
-    "NÃO se reapresente. Responda em BULLETS curtas (4–8 itens) logo após esta linha:\n" +
-    "• Documentos: levar documento com foto e carteirinha (se houver).\n" +
-    "• Exames: trazer exames e relatórios prévios relevantes.\n" +
-    "• Medicamentos: liste uso atual e informe alergias.\n" +
-    "• Jejum/analgésicos: siga as recomendações se aplicável.\n" +
-    "• Pontualidade: chegue 10–15 min antes.\n" +
-    "• Telemedicina (se for o caso): local silencioso, Wi-Fi estável, bateria >50%, câmera e microfone funcionando.\n" +
-    "Finalize com: 'Se surgir qualquer dúvida, me avise aqui 🙂'.";
-
-  await askCristina({
-    userText: hint,
-    userPhone: String(from)
-  });
-} catch (e) {
-  console.error("[confirmar-template] erro:", e?.message || e);
-}
-    return;
-  }
-
-  if (PP.startsWith("CANCELAR|")) {
-    // Joga direto no fluxo de cancelamento, preservando seu protocolo
-    const parts = btnPayloadRaw.split("|");
-    const eventPhone = (parts[1] || "").replace(/\D/g, "");
-    const eventStart = parts[2] || null;
-
-    const convMem = ensureConversation(from);
-    convMem.mode = "cancel";
-    convMem.after = null; // cancelamento simples
-    convMem.cancelCtx = {
-      phone: eventPhone || "",
-      name:  "",
-      dateISO: eventStart || null,
-      timeHHMM: null,
-      chosenEvent: null,
-      eventId: null,
-      awaitingConfirm: true,
-      confirmed: false,
-    };
-
-    await sendText({ to: from, text: "Posso cancelar sua consulta para este horário? Responda **sim** ou **não**." });
-    return;
-  }
-} catch (e) {
-  console.warn("[intercept-buttons] erro:", e?.message || e);
-}
-
+    
     
     // --- Anti-duplicação de entrada (antes de ler msgType) ---
 {
@@ -1096,82 +1025,63 @@ if (isPureGreeting) {
       /\b(2|op[cç][aã]o\s*2|cancelar|quero\s*cancelar|desmarcar)\b/.test(norm);
 
     // ↳ CONFIRMAR → chama IA contextualizada para orientações (sem se reapresentar)
-    if (saidConfirm) {
-      // limpa fase para não reprocessar
-      conv.phase = null;
-            // mantém as duas chaves sincronizadas
-      try {
-        const a = ensureConversation(keyA); a.phase = null;
-        const b = ensureConversation(keyB); b.phase = null;
-      } catch {}
-
-      try {
-       await sendText({
+    try {
+  await sendText({
     to: from,
-    text: "Perfeito! Consulta confirmada! As orientações pré-consulta são:"
-  });
-
-  const hint =
-    "[ORIENTACOES_PRE_CONSULTA]\n" +
-    "NÃO se reapresente. Responda em BULLETS curtas (4–8 itens) logo após esta linha:\n" +
-    "• Documentos: levar documento com foto e carteirinha (se houver).\n" +
-    "• Exames: trazer exames e relatórios prévios relevantes.\n" +
-    "• Medicamentos: liste uso atual e informe alergias.\n" +
-    "• Jejum/analgésicos: seguir orientações quando indicado.\n" +
-    "• Pontualidade: chegar 10–15 min antes.\n" +
-    "• Telemedicina (se for o caso): local silencioso, Wi-Fi estável, bateria >50%, câmera e microfone funcionando.\n" +
-    "Finalize com: 'Se surgir qualquer dúvida, me avise aqui 🙂'.";
-
-  await askCristina({
-    userText: hint,
-    userPhone: String(from)
+    text:
+"Perfeito! Para que você esteja preparado, aqui vão algumas orientações pré-consulta:\n\n" +
+"1. Chegue com pelo menos 15 minutos de antecedência.\n" +
+"2. Caso sua consulta seja por telemedicina, certifique-se que o sinal da internet esteja funcionante;\n" +
+"3. Tenha em mãos todos os exames e laudos médicos.\n" +
+"4. Caso tenha alguma medicação em uso, é importante mencioná-la durante a consulta.\n\n" +
+"Se precisar de mais alguma coisa ou tiver outras dúvidas, estou à disposição! Até logo! 👋"
   });
 } catch (e) {
   console.error("[template-confirm] erro:", e?.message || e);
 }
-      return; // importantíssimo: não deixa cair nos outros fluxos
-    }
-
+return; // 🔒 mantém isolado (não cai em outros fluxos)
+  
     // ↳ CANCELAR → entra direto no modo cancelamento pedindo confirmação "sim/não"
-    if (saidCancel) {
-      conv.phase = null; // sai da fase template
-            // mantém as duas chaves sincronizadas
-      try {
-        const a = ensureConversation(keyA); a.phase = null; a.mode = "cancel"; a.after = null; a.cancelCtx = ctx;
-        const b = ensureConversation(keyB); b.phase = null; b.mode  = "cancel"; b.after  = null; b.cancelCtx  = ctx;
-      } catch {}
+   if (saidCancel) {
+  conv.phase = null; // sai da fase template
 
-      conv.mode = "cancel";
-      conv.after = null;
+  conv.mode  = "cancel";
+  conv.after = null;
 
-      // Prefill do horário a partir do template (se disponível)
-      const ctx = conv.cancelCtx = {
-        phone: normalizePhoneForLookup(from),
-        name:  conv.patientName || "",
-        dateISO: conv?.templateCtx?.startISO || null,
-        timeHHMM: null,
-        chosenEvent: null,
-        eventId: null,
-        awaitingConfirm: true,
-        confirmed: false,
-      };
+  // 1) Cria o contexto antes de sincronizar
+  const ctx = conv.cancelCtx = {
+    phone: normalizePhoneForLookup(from),
+    name:  conv.patientName || "",
+    dateISO: conv?.templateCtx?.startISO || null,
+    timeHHMM: null,
+    chosenEvent: null,
+    eventId: null,
+    awaitingConfirm: true,
+    confirmed: false,
+  };
 
-      // Mensagem já no formato que o seu cancelamento espera
-      let pergunta = "Posso cancelar sua consulta para este horário? Responda **sim** ou **não**.";
-      try {
-        if (ctx.dateISO) {
-          const d = new Date(ctx.dateISO);
-          const dd = String(d.getDate()).padStart(2, "0");
-          const mm = String(d.getMonth()+1).padStart(2, "0");
-          const hh = String(d.getHours()).padStart(2, "0");
-          const mi = String(d.getMinutes()).padStart(2, "0");
-          pergunta = `Posso cancelar sua consulta no dia **${dd}/${mm} às ${hh}:${mi}**? Responda **sim** ou **não**.`;
-        }
-      } catch {}
-      await sendText({ to: from, text: pergunta });
+  // 2) (Opcional) sincroniza com as duas chaves 55/nacional
+  try {
+    const a = ensureConversation(keyA); a.phase = null; a.mode = "cancel"; a.after = null; a.cancelCtx = ctx;
+    const b = ensureConversation(keyB); b.phase = null; b.mode  = "cancel"; b.after  = null; b.cancelCtx  = ctx;
+  } catch {}
 
-      return; // não deixa prosseguir para outras intenções
+  // 3) Pergunta padrão do seu fluxo
+  let pergunta = "Posso cancelar sua consulta para este horário? Responda **sim** ou **não**.";
+  try {
+    if (ctx.dateISO) {
+      const d = new Date(ctx.dateISO);
+      const dd = String(d.getDate()).padStart(2, "0");
+      const mm = String(d.getMonth()+1).padStart(2, "0");
+      const hh = String(d.getHours()).padStart(2, "0");
+      const mi = String(d.getMinutes()).padStart(2, "0");
+      pergunta = `Posso cancelar sua consulta no dia **${dd}/${mm} às ${hh}:${mi}**? Responda **sim** ou **não**.`;
     }
+  } catch {}
+  await sendText({ to: from, text: pergunta });
+
+  return; // 🔒 não deixa prosseguir para outras intenções
+}
 
     // Se respondeu algo fora 1/2/confirmar/cancelar, deixa seguir para IA normal
     // (sem quebrar fase atual de template — não damos return)
@@ -2805,18 +2715,34 @@ rawMessage = rawMessage
   .replace("{{nome}}", pacienteNome)
   .replace("{{hora}}", dataHoraPt);
 
-// log para conferência
-console.log(`[📤 Enviando template]: ${rawMessage}`);
+// === Envio como TEXTO SIMPLES (sem botões) + marca fase do template ===
+const lembrete = 
+  `Olá, estou passando para lembrar da sua consulta no dia ${dataHoraPt} com a Dra. Jenifer Bottino.\n` +
+  `\n` +
+  `Deseja:\n` +
+  `1 - CONFIRMAR\n` +
+  `2 - CANCELAR`;
 
-await sendConfirmationTemplate({
-  to: phoneDigits,
-  bodyParams: [
-    { type: "text", text: rawMessage }
-  ],
-  confirmPayload: `CONFIRMAR|${phoneDigits}|${startISOwithTime}`,
-  cancelPayload:  `CANCELAR|${phoneDigits}|${startISOwithTime}`,
-});
+await sendText({ to: phoneDigits, text: lembrete });
 
+// 🔒 Marca fase "reminder_template" por 48h para isolar 1/2/confirmar/cancelar
+try {
+  const raw = String(phoneDigits).replace(/\D/g, "");
+  const withDDI = raw.startsWith("55") ? raw : ("55" + raw);
+  const noDDI   = raw.startsWith("55") ? raw.slice(2) : raw;
+
+  for (const key of [withDDI, noDDI]) {
+    const conv = ensureConversation(key);
+    conv.phase = "reminder_template";
+    conv.templateCtx = {
+      startISO: startISOwithTime,
+      setAt: Date.now(),
+      activeUntil: Date.now() + 48 * 60 * 60 * 1000 // 48h
+    };
+    conv.updatedAt = Date.now();
+  }
+} catch {}
+// === fim do envio simples ===
   });
 } catch (e) {
   console.error("Falha ao agendar template de véspera:", e?.message || e);
