@@ -957,34 +957,21 @@ try {
     const conv = ensureConversation(from);
     conv.confirmedAt = Date.now();
     conv.phase = null; // 🔹 sai explicitamente da fase template
-    try {
-      // 👉 Mensagem direta no formato pedido (sem reapresentar)
-  await sendText({
-    to: from,
-    text: "Perfeito! Consulta confirmada! As orientações pré-consulta são:"
-  });
-
-  // 👉 Gatilho da IA com instruções claras de FORMATO (sem se reapresentar)
-  const hint =
-    "[ORIENTACOES_PRE_CONSULTA]\n" +
-    "NÃO se reapresente. Responda em BULLETS curtas (4–8 itens) logo após esta linha:\n" +
-    "• Documentos: levar documento com foto e carteirinha (se houver).\n" +
-    "• Exames: trazer exames e relatórios prévios relevantes.\n" +
-    "• Medicamentos: liste uso atual e informe alergias.\n" +
-    "• Jejum/analgésicos: siga as recomendações se aplicável.\n" +
-    "• Pontualidade: chegue 10–15 min antes.\n" +
-    "• Telemedicina (se for o caso): local silencioso, Wi-Fi estável, bateria >50%, câmera e microfone funcionando.\n" +
-    "Finalize com: 'Se surgir qualquer dúvida, me avise aqui 🙂'.";
-
-  await askCristina({
-    userText: hint,
-    userPhone: String(from)
-  });
-} catch (e) {
-  console.error("[confirmar-template] erro:", e?.message || e);
-}
+        try {
+      await sendText({
+        to: from,
+        text:
+"Perfeito! Para que você esteja preparado, aqui vão algumas orientações pré-consulta:\n\n" +
+"1. Chegue com pelo menos 15 minutos de antecedência.\n" +
+"2. Telemedicina (se for o caso): local silencioso, Wi-Fi estável, bateria >50%, câmera e microfone funcionando.\n" +
+"3. Tenha em mãos todos os exames e laudos médicos.\n" +
+"4. Caso tenha alguma medicação em uso, é importante mencioná-la durante a consulta.\n\n" +
+"Se precisar de mais alguma coisa ou tiver outras dúvidas, estou à disposição! Até logo! 👋"
+      });
+    } catch (e) {
+      console.error("[confirmar-template] erro:", e?.message || e);
+    }
     return;
-  }
 
   if (PP.startsWith("CANCELAR|")) {
     // Joga direto no fluxo de cancelamento, preservando seu protocolo
@@ -1105,32 +1092,22 @@ if (isPureGreeting) {
         const b = ensureConversation(keyB); b.phase = null;
       } catch {}
 
-      try {
-       await sendText({
-    to: from,
-    text: "Perfeito! Consulta confirmada! As orientações pré-consulta são:"
-  });
-
-  const hint =
-    "[ORIENTACOES_PRE_CONSULTA]\n" +
-    "NÃO se reapresente. Responda em BULLETS curtas (4–8 itens) logo após esta linha:\n" +
-    "• Documentos: levar documento com foto e carteirinha (se houver).\n" +
-    "• Exames: trazer exames e relatórios prévios relevantes.\n" +
-    "• Medicamentos: liste uso atual e informe alergias.\n" +
-    "• Jejum/analgésicos: seguir orientações quando indicado.\n" +
-    "• Pontualidade: chegar 10–15 min antes.\n" +
-    "• Telemedicina (se for o caso): local silencioso, Wi-Fi estável, bateria >50%, câmera e microfone funcionando.\n" +
-    "Finalize com: 'Se surgir qualquer dúvida, me avise aqui 🙂'.";
-
-  await askCristina({
-    userText: hint,
-    userPhone: String(from)
-  });
-} catch (e) {
-  console.error("[template-confirm] erro:", e?.message || e);
+        try {
+    await sendText({
+      to: from,
+      text:
+"Perfeito! Para que você esteja preparado, aqui vão algumas orientações pré-consulta:\n\n" +
+"1. Chegue com pelo menos 15 minutos de antecedência.\n" +
+"2. Telemedicina (se for o caso): local silencioso, Wi-Fi estável, bateria >50%, câmera e microfone funcionando.\n" +
+"3. Tenha em mãos todos os exames e laudos médicos.\n" +
+"4. Caso tenha alguma medicação em uso, é importante mencioná-la durante a consulta.\n\n" +
+"Se precisar de mais alguma coisa ou tiver outras dúvidas, estou à disposição! Até logo! 👋"
+    });
+  } catch (e) {
+    console.error("[template-confirm] erro:", e?.message || e);
+  }
+  return; // importantíssimo: não deixa cair nos outros fluxos
 }
-      return; // importantíssimo: não deixa cair nos outros fluxos
-    }
 
     // ↳ CANCELAR → entra direto no modo cancelamento pedindo confirmação "sim/não"
     if (saidCancel) {
