@@ -425,50 +425,42 @@ function scheduleOneShot(dateTime, jobFn) {
 }
 
 // Envia TEMPLATE aprovado via Z-API (ajuste NAMESPACE/NAME conforme seu template aprovado)
-async function sendConfirmationTemplate({ to, templateName = "confirma_consulta_vespera", language = "pt_BR", bodyParams = [], confirmPayload, cancelPayload }) {
-  const { ZAPI_BASE_URL, ZAPI_INSTANCE_ID, ZAPI_TOKEN } = process.env;
-  const url = `${ZAPI_BASE_URL}/instances/${ZAPI_INSTANCE_ID}/token/${ZAPI_TOKEN}/send-template`;
-  const payload = {
-    phone: String(to).replace(/\D/g, ""),
-    namespace: process.env.ZAPI_TEMPLATE_NAMESPACE || null,
-    name: templateName,
-    language,
-    components: [
-      { type: "body", parameters: bodyParams },
-      { type: "button", sub_type: "quick_reply", index: "0", parameters: [{ type: "payload", payload: confirmPayload }] },
-      { type: "button", sub_type: "quick_reply", index: "1", parameters: [{ type: "payload", payload: cancelPayload }] },
-    ],
-  };
+// Envia LEMBRETE como TEXTO PURO (sem botões) e marca fase "reminder_template"
+async function sendConfirmationTemplate({ to, templateName = null, language = "pt_BR", bodyParams = [], confirmPayload = null, cancelPayload = null }) {
+  const phone = String(to).replace(/\D/g, "");
 
+  // Monte aqui o SEU texto de lembrete (ajuste data/hora onde você já tem essas strings)
+  // Use as mesmas chaves {{data}} e {{hora}} que você já popula.
+  const reminderText =
+    "Olá, estou passando para lembrar da sua consulta no dia {{data}} às {{hora}} com a Dra. Jenifer Bottino.\n" +
+    "Deseja:\n" +
+    "1 - CONFIRMAR\n" +
+    "2 - CANCELAR";
+
+  // 1) Envia o texto
+  await sendText({ to: phone, text: reminderText, skipDedupeOnce: true });
+
+  // 2) Marca fase “reminder_template” por 48h em AMBAS as chaves (com e sem 55)
   try {
-    const resp = await axios.post(url, payload);
+    const raw = phone;
+    const withDDI = raw.startsWith("55") ? raw : ("55" + raw);
+    const noDDI   = raw.startsWith("55") ? raw.slice(2) : raw;
 
-        // 🔒 Marca fase "reminder_template" por até 48h para isolar respostas "1/2" (com e sem 55)
-    try {
-      const raw = String(to).replace(/\D/g, "");
-      const withDDI = raw.startsWith("55") ? raw : ("55" + raw);
-      const noDDI   = raw.startsWith("55") ? raw.slice(2) : raw;
+    for (const key of [withDDI, noDDI]) {
+      const conv = ensureConversation(key);
+      conv.phase = "reminder_template";
+      conv.templateCtx = {
+        setAt: Date.now(),
+        activeUntil: Date.now() + 48 * 60 * 60 * 1000 // 48h
+      };
+      conv.updatedAt = Date.now();
+      // opcional: guardar o último lembrete enviado para heurística extra
+      conv.lastReminderText = reminderText;
+    }
+  } catch {}
 
-      const isoFromPayload = (confirmPayload || "").split("|")[2] || null;
-
-      for (const key of [withDDI, noDDI]) {
-        const conv = ensureConversation(key);
-        conv.phase = "reminder_template";
-        conv.templateCtx = {
-          startISO: isoFromPayload || null,
-          setAt: Date.now(),
-          activeUntil: Date.now() + 48 * 60 * 60 * 1000 // 48h
-        };
-        conv.updatedAt = Date.now();
-      }
-    } catch {}
-
-    return resp;
-  } catch (e) {
-    console.error("[sendConfirmationTemplate] erro:", e?.response?.data || e);
-    // Fallback: texto simples caso o provedor recuse o template
-    return sendText({ to, text: "Confirme sua consulta: responda *CONFIRMAR* para confirmar ou *CANCELAR* para cancelar." });
-  }
+  // compatibilidade: retorna algo simples
+  return { ok: true };
 }
 
 
@@ -998,7 +990,7 @@ if (isPureGreeting) {
   // (sem return)
 }
 
- // === FASE DO TEMPLATE (isolada) — confirmar/cancelar sem confundir outros fluxos ===
+// === FASE DO TEMPLATE (isolada) — confirmar/cancelar sem confundir outros fluxos ===
 {
   const keyA = String(from).replace(/\D/g, "");
   const keyB = keyA.startsWith("55") ? keyA.slice(2) : ("55" + keyA);
@@ -1010,7 +1002,6 @@ if (isPureGreeting) {
 
   const inTemplate =
     conv?.phase === "reminder_template" &&
-
     (!conv?.templateCtx?.activeUntil || Date.now() <= conv.templateCtx.activeUntil);
 
   if (inTemplate) {
@@ -1024,70 +1015,55 @@ if (isPureGreeting) {
     const saidCancel =
       /\b(2|op[cç][aã]o\s*2|cancelar|quero\s*cancelar|desmarcar)\b/.test(norm);
 
-    // ↳ CONFIRMAR → chama IA contextualizada para orientações (sem se reapresentar)
-    try {
-  await sendText({
-    to: from,
-    text:
+    // CONFIRMAR → responde fixo (sem IA) e sai da fase
+    if (saidConfirm) {
+      conv.phase = null;
+      try {
+        const a = ensureConversation(keyA); a.phase = null;
+        const b = ensureConversation(keyB); b.phase = null;
+      } catch {}
+
+      try {
+        await sendText({
+          to: from,
+          text:
 "Perfeito! Para que você esteja preparado, aqui vão algumas orientações pré-consulta:\n\n" +
 "1. Chegue com pelo menos 15 minutos de antecedência.\n" +
 "2. Caso sua consulta seja por telemedicina, certifique-se que o sinal da internet esteja funcionante;\n" +
 "3. Tenha em mãos todos os exames e laudos médicos.\n" +
 "4. Caso tenha alguma medicação em uso, é importante mencioná-la durante a consulta.\n\n" +
 "Se precisar de mais alguma coisa ou tiver outras dúvidas, estou à disposição! Até logo! 👋"
-  });
-} catch (e) {
-  console.error("[template-confirm] erro:", e?.message || e);
-}
-return; // 🔒 mantém isolado (não cai em outros fluxos)
-  
-    // ↳ CANCELAR → entra direto no modo cancelamento pedindo confirmação "sim/não"
-   if (saidCancel) {
-  conv.phase = null; // sai da fase template
-
-  conv.mode  = "cancel";
-  conv.after = null;
-
-  // 1) Cria o contexto antes de sincronizar
-  const ctx = conv.cancelCtx = {
-    phone: normalizePhoneForLookup(from),
-    name:  conv.patientName || "",
-    dateISO: conv?.templateCtx?.startISO || null,
-    timeHHMM: null,
-    chosenEvent: null,
-    eventId: null,
-    awaitingConfirm: true,
-    confirmed: false,
-  };
-
-  // 2) (Opcional) sincroniza com as duas chaves 55/nacional
-  try {
-    const a = ensureConversation(keyA); a.phase = null; a.mode = "cancel"; a.after = null; a.cancelCtx = ctx;
-    const b = ensureConversation(keyB); b.phase = null; b.mode  = "cancel"; b.after  = null; b.cancelCtx  = ctx;
-  } catch {}
-
-  // 3) Pergunta padrão do seu fluxo
-  let pergunta = "Posso cancelar sua consulta para este horário? Responda **sim** ou **não**.";
-  try {
-    if (ctx.dateISO) {
-      const d = new Date(ctx.dateISO);
-      const dd = String(d.getDate()).padStart(2, "0");
-      const mm = String(d.getMonth()+1).padStart(2, "0");
-      const hh = String(d.getHours()).padStart(2, "0");
-      const mi = String(d.getMinutes()).padStart(2, "0");
-      pergunta = `Posso cancelar sua consulta no dia **${dd}/${mm} às ${hh}:${mi}**? Responda **sim** ou **não**.`;
+        });
+      } catch (e) {
+        console.error("[template-confirm] erro:", e?.message || e);
+      }
+      return; // <- não deixa cair em outros fluxos
     }
-  } catch {}
-  await sendText({ to: from, text: pergunta });
 
-  return; // 🔒 não deixa prosseguir para outras intenções
-}
+    // CANCELAR → entra no modo “cancel” (sem IA), perguntando confirmação
+    if (saidCancel) {
+      conv.phase = null;
+      try {
+        const a = ensureConversation(keyA); a.phase = null; a.mode = "cancel"; a.after = null;
+        const b = ensureConversation(keyB); b.phase = null; b.mode = "cancel"; b.after  = null;
+      } catch {}
 
-    // Se respondeu algo fora 1/2/confirmar/cancelar, deixa seguir para IA normal
-    // (sem quebrar fase atual de template — não damos return)
+      await sendText({
+        to: from,
+        text: "Posso cancelar sua consulta para este horário? Responda **sim** ou **não**."
+      });
+      return;
+    }
+
+    // Se digitou algo diferente de confirmar/cancelar enquanto na fase → apenas peça para escolher 1/2
+    await sendText({
+      to: from,
+      text: "Por favor, responda **1 para CONFIRMAR** ou **2 para CANCELAR**."
+    });
+    return;
   }
 }
- 
+
 // === INTENÇÃO DE CANCELAMENTO / REAGENDAMENTO ===
 {
   const convMem = ensureConversation(from);
