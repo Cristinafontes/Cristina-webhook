@@ -971,9 +971,8 @@ try {
     } catch (e) {
       console.error("[confirmar-template] erro:", e?.message || e);
     }
-    return;
-
-  if (PP.startsWith("CANCELAR|")) {
+ return;
+} else if (PP.startsWith("CANCELAR|")) { 
     // Joga direto no fluxo de cancelamento, preservando seu protocolo
     const parts = btnPayloadRaw.split("|");
     const eventPhone = (parts[1] || "").replace(/\D/g, "");
@@ -1111,9 +1110,24 @@ if (isPureGreeting) {
 
     // ↳ CANCELAR → entra direto no modo cancelamento pedindo confirmação "sim/não"
     if (saidCancel) {
-      conv.phase = null; // sai da fase template
-            // mantém as duas chaves sincronizadas
-      try {
+  conv.phase = null;
+
+  conv.mode = "cancel";
+  conv.after = null;
+
+  // Prefill do horário a partir do template (se disponível)
+  const ctx = conv.cancelCtx = {
+    phone: normalizePhoneForLookup(from),
+    name:  conv.patientName || "",
+    dateISO: conv?.templateCtx?.startISO || null,
+    timeHHMM: null,
+    chosenEvent: null,
+    eventId: null,
+    awaitingConfirm: true,
+    confirmed: false,
+  };
+
+  // mantém as duas chaves sincronizadas  try {
         const a = ensureConversation(keyA); a.phase = null; a.mode = "cancel"; a.after = null; a.cancelCtx = ctx;
         const b = ensureConversation(keyB); b.phase = null; b.mode  = "cancel"; b.after  = null; b.cancelCtx  = ctx;
       } catch {}
