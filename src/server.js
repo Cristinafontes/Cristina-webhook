@@ -948,43 +948,27 @@ try {
   const PP = btnPayloadRaw.toUpperCase();
 
   if (PP.startsWith("CONFIRMAR|")) {
-    // Ex.: CONFIRMAR|<phone>|<startISO>
-    const parts = btnPayloadRaw.split("|");
-    // const eventPhone = (parts[1] || "").replace(/\D/g, "");
-    // const eventStart = parts[2] || null;
+  // Ex.: CONFIRMAR|<phone>|<startISO>
+  // Limpamos a fase de template e enviamos a mensagem fixa (sem IA)
+  const conv = ensureConversation(from);
+  conv.confirmedAt = Date.now();
+  conv.phase = null; // sai da fase template
 
-    // Marca “confirmado” e chama a IA para orientações
-    const conv = ensureConversation(from);
-    conv.confirmedAt = Date.now();
-    conv.phase = null; // 🔹 sai explicitamente da fase template
-    try {
-      // 👉 Mensagem direta no formato pedido (sem reapresentar)
   await sendText({
     to: from,
-    text: "Perfeito! Consulta confirmada! As orientações pré-consulta são:"
+    text:
+            "Perfeito! Consulta confirmada! As orientações pré-consulta são:\n" +
+            "• Documentos: levar documento com foto e carteirinha (se houver).\n" +
+            "• Exames: trazer exames e relatórios prévios relevantes.\n" +
+            "• Medicamentos: liste uso atual e informe alergias.\n" +
+            "• Jejum/analgésicos: seguir orientações quando indicado.\n" +
+            "• Pontualidade: chegar 10–15 min antes.\n" +
+            "• Telemedicina: local silencioso, Wi-Fi estável, bateria >50%, câmera/mic ok.\n" +
+            "Se surgir qualquer dúvida, me avise aqui 🙂"
   });
 
-  // 👉 Gatilho da IA com instruções claras de FORMATO (sem se reapresentar)
-  const hint =
-    "[ORIENTACOES_PRE_CONSULTA]\n" +
-    "NÃO se reapresente. Responda em BULLETS curtas (4–8 itens) logo após esta linha:\n" +
-    "• Documentos: levar documento com foto e carteirinha (se houver).\n" +
-    "• Exames: trazer exames e relatórios prévios relevantes.\n" +
-    "• Medicamentos: liste uso atual e informe alergias.\n" +
-    "• Jejum/analgésicos: siga as recomendações se aplicável.\n" +
-    "• Pontualidade: chegue 10–15 min antes.\n" +
-    "• Telemedicina (se for o caso): local silencioso, Wi-Fi estável, bateria >50%, câmera e microfone funcionando.\n" +
-    "Finalize com: 'Se surgir qualquer dúvida, me avise aqui 🙂'.";
-
-  await askCristina({
-    userText: hint,
-    userPhone: String(from)
-  });
-} catch (e) {
-  console.error("[confirmar-template] erro:", e?.message || e);
+  return;
 }
-    return;
-  }
 
   if (PP.startsWith("CANCELAR|")) {
     // Joga direto no fluxo de cancelamento, preservando seu protocolo
@@ -1097,40 +1081,26 @@ if (isPureGreeting) {
 
     // ↳ CONFIRMAR → chama IA contextualizada para orientações (sem se reapresentar)
     if (saidConfirm) {
-      // limpa fase para não reprocessar
-      conv.phase = null;
-            // mantém as duas chaves sincronizadas
-      try {
-        const a = ensureConversation(keyA); a.phase = null;
-        const b = ensureConversation(keyB); b.phase = null;
-      } catch {}
+  // limpa fase para não reprocessar
+  conv.phase = null;
+  try { const a = ensureConversation(keyA); a.phase = null; } catch {}
+  try { const b = ensureConversation(keyB); b.phase = null; } catch {}
 
-      try {
-       await sendText({
+  // Envia a mensagem fixa de confirmação (sem IA)
+  await sendText({
     to: from,
-    text: "Perfeito! Consulta confirmada! As orientações pré-consulta são:"
+    text:
+            "Perfeito! Consulta confirmada! As orientações pré-consulta são:\n" +
+            "• Documentos: levar documento com foto e carteirinha (se houver).\n" +
+            "• Exames: trazer exames e relatórios prévios relevantes.\n" +
+            "• Medicamentos: liste uso atual e informe alergias.\n" +
+            "• Jejum/analgésicos: seguir orientações quando indicado.\n" +
+            "• Pontualidade: chegar 10–15 min antes.\n" +
+            "• Telemedicina: local silencioso, Wi-Fi estável, bateria >50%, câmera/mic ok.\n" +
+            "Se surgir qualquer dúvida, me avise aqui 🙂"
   });
-
-  const hint =
-    "[ORIENTACOES_PRE_CONSULTA]\n" +
-    "NÃO se reapresente. Responda em BULLETS curtas (4–8 itens) logo após esta linha:\n" +
-    "• Documentos: levar documento com foto e carteirinha (se houver).\n" +
-    "• Exames: trazer exames e relatórios prévios relevantes.\n" +
-    "• Medicamentos: liste uso atual e informe alergias.\n" +
-    "• Jejum/analgésicos: seguir orientações quando indicado.\n" +
-    "• Pontualidade: chegar 10–15 min antes.\n" +
-    "• Telemedicina (se for o caso): local silencioso, Wi-Fi estável, bateria >50%, câmera e microfone funcionando.\n" +
-    "Finalize com: 'Se surgir qualquer dúvida, me avise aqui 🙂'.";
-
-  await askCristina({
-    userText: hint,
-    userPhone: String(from)
-  });
-} catch (e) {
-  console.error("[template-confirm] erro:", e?.message || e);
+  return; // importantíssimo: não deixa cair nos outros fluxos
 }
-      return; // importantíssimo: não deixa cair nos outros fluxos
-    }
 
     // ↳ CANCELAR → entra direto no modo cancelamento pedindo confirmação "sim/não"
     if (saidCancel) {
