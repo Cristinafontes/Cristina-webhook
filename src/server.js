@@ -1078,6 +1078,11 @@ if (isPureGreeting) {
 
     const saidCancel =
       /\b(2|op[cç][aã]o\s*2|cancelar|quero\s*cancelar|desmarcar)\b/.test(norm);
+// --- AUTO-ARM: se o Worker mandou o lembrete (sem marcar a fase) e o paciente respondeu 1/2,
+// "armamos" a fase aqui para isolar do resto do robô.
+if (!inTemplate && (saidConfirm || saidCancel)) {
+  conv.phase = "reminder_template";
+}
 
     // ↳ CONFIRMAR → chama IA contextualizada para orientações (sem se reapresentar)
     if (saidConfirm) {
@@ -1143,8 +1148,13 @@ if (isPureGreeting) {
       return; // não deixa prosseguir para outras intenções
     }
 
-    // Se respondeu algo fora 1/2/confirmar/cancelar, deixa seguir para IA normal
-    // (sem quebrar fase atual de template — não damos return)
+    // Qualquer outra coisa *enquanto* a fase template estiver ativa → reforça instrução e não deixa cair na IA
+await sendText({
+  to: from,
+  text: 'Não entendi. Para seguir, responda **1** para CONFIRMAR ou **2** para CANCELAR.'
+});
+return;
+
   }
 }
  
