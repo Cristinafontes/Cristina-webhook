@@ -1067,6 +1067,11 @@ if (isPureGreeting) {
     conv?.phase === "reminder_template" &&
 
     (!conv?.templateCtx?.activeUntil || Date.now() <= conv.templateCtx.activeUntil);
+// --- AUTO-ARM: se o Worker mandou o lembrete (sem marcar a fase) e o paciente respondeu 1/2,
+// "armamos" a fase aqui para isolar do resto do robô.
+if (!inTemplate && (saidConfirm || saidCancel)) {
+  conv.phase = "reminder_template";
+}
 
   if (inTemplate) {
     const norm = String(userText || "")
@@ -1078,11 +1083,6 @@ if (isPureGreeting) {
 
     const saidCancel =
       /\b(2|op[cç][aã]o\s*2|cancelar|quero\s*cancelar|desmarcar)\b/.test(norm);
-// --- AUTO-ARM: se o Worker mandou o lembrete (sem marcar a fase) e o paciente respondeu 1/2,
-// "armamos" a fase aqui para isolar do resto do robô.
-if (!inTemplate && (saidConfirm || saidCancel)) {
-  conv.phase = "reminder_template";
-}
 
     // ↳ CONFIRMAR → chama IA contextualizada para orientações (sem se reapresentar)
     if (saidConfirm) {
