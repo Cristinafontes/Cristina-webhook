@@ -1028,6 +1028,63 @@ try {
     const trimmed = (userText || "").trim().toLowerCase();
     // Marca que o paciente acabou de falar (libera respostas mesmo após longos silêncios)
 ensureConversation(from).lastUserAt = Date.now();
+    // === GUARDIÃO DE FASE ===
+// Define prioridade: agendamento > reagendamento > cancelamento > template
+{
+  const conv = getConversation(from) || ensureConversation(from);
+  const phase = conv?.phase || null;
+
+  const normMsg = String(userText || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+
+  const said1 = /\b(1|op[cç][aã]o\s*1|confirmar|confirmo|ok|sim)\b/.test(normMsg);
+  const said2 = /\b(2|op[cç][aã]o\s*2|cancelar|desmarcar|nao)\b/.test(normMsg);
+
+  // ⚙️ 1️⃣ Se estiver agendando, 1 e 2 pertencem ao fluxo de agendamento
+  if (phase === "agendamento" || phase === "escolhendo_horario") {
+    if (said1 || said2) {
+      console.log("[FaseGuard] resposta numérica direcionada ao agendamento");
+      // segue normalmente, não intercepta o fluxo
+    }
+  }
+
+  // ⚙️ 2️⃣ Se estiver reagendando, 1 e 2 pertencem ao fluxo de reagendamento
+  else if (phase === "reagendamento" || phase === "cancel_reagendamento") {
+    if (said1 || said2) {
+      console.log("[FaseGuard] resposta numérica direcionada ao reagendamento");
+      // segue normalmente, não intercepta o fluxo
+    }
+  }
+
+  // ⚙️ 3️⃣ Se estiver em cancelamento isolado
+  else if (phase === "cancelamento") {
+    if (said1 || said2) {
+      console.log("[FaseGuard] resposta numérica direcionada ao cancelamento");
+      // segue normalmente
+    }
+  }
+
+  // ⚙️ 4️⃣ Se estiver em template ativo
+  else if (phase === "reminder_template") {
+    if (!(said1 || said2)) {
+      await sendText({
+        to: from,
+        text: "Para seguir, responda **1** para CONFIRMAR ou **2** para CANCELAR."
+      });
+      return;
+    }
+    // Se respondeu 1 ou 2, a própria lógica do template cuidará.
+  }
+
+  // ⚙️ 5️⃣ Caso não haja fase (fase null), “1/2” não devem armar template
+  else if (!phase && (said1 || said2)) {
+    console.log("[FaseGuard] ignorando 1/2 sem contexto de fase.");
+    // ignora completamente — não armar template
+  }
+}
+
 
   // === MEMÓRIA DE IDENTIDADE (nome/telefone) ===
 {
@@ -1039,14 +1096,15 @@ ensureConversation(from).lastUserAt = Date.now();
   conv.lastKnownPhone = from;
 }
 
-    if (["reset", "reiniciar", "reiniciar conversa", "novo atendimento"].includes(trimmed)) {
+    if (["reset", "reiniciar", "novo atendimento"].includes(trimmed)) {
   const d = String(from).replace(/\D/g, "");
-  const withDDI = d.startsWith("55") ? d : ("55" + d);
-  const noDDI   = d.startsWith("55") ? d.slice(2) : d;
+  const withDDI = d.startsWith("55") ? d : "55" + d;
+  const noDDI = d.startsWith("55") ? d.slice(2) : d;
   resetConversation(withDDI);
   resetConversation(noDDI);
   return;
 }
+
 
   // === BLACKLIST DE SAUDAÇÕES (não dispara pescagem nem agendamento) ===
 const isPureGreeting =
@@ -1084,19 +1142,18 @@ if (isPureGreeting) {
   const earlySaidCancel =
     /\b(2|op[cç][aã]o\s*2|cancelar|quero\s*cancelar|desmarcar)\b/.test(normEarly);
 
-    // 3) AUTO-ARM (apertado): só arma SE já houver contexto do template ativo.
-  // Evita sequestrar "1/2" quando a conversa está em outra fase (ex.: escolhendo horários).
-  if (
-    !inTemplate &&
-    (earlySaidConfirm || earlySaidCancel) &&
-    conv?.templateCtx &&
-    conv.templateCtx.activeUntil &&
-    Date.now() <= conv.templateCtx.activeUntil
-  ) {
-    conv.phase = "reminder_template";
-    inTemplate = true;
-    console.log("[AUTO-ARM] (apertado) fase template assumida para", from);
-  }
+    // 3) AUTO-ARM (restrito): só arma se houver contexto do template ativo (conv.templateCtx)
+if (
+  !inTemplate &&
+  (earlySaidConfirm || earlySaidCancel) &&
+  conv?.templateCtx &&
+  conv.templateCtx.activeUntil &&
+  Date.now() <= conv.templateCtx.activeUntil
+) {
+  conv.phase = "reminder_template";
+  inTemplate = true;
+  console.log("[AUTO-ARM] Template assumido porque havia contexto ativo.");
+}
 
   if (inTemplate) {
     // Reaproveita o que já calculamos
