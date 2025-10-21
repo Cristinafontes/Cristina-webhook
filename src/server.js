@@ -1040,9 +1040,14 @@ ensureConversation(from).lastUserAt = Date.now();
 }
 
     if (["reset", "reiniciar", "reiniciar conversa", "novo atendimento"].includes(trimmed)) {
-  resetConversation(from);
+  const d = String(from).replace(/\D/g, "");
+  const withDDI = d.startsWith("55") ? d : ("55" + d);
+  const noDDI   = d.startsWith("55") ? d.slice(2) : d;
+  resetConversation(withDDI);
+  resetConversation(noDDI);
   return;
 }
+
   // === BLACKLIST DE SAUDAÇÕES (não dispara pescagem nem agendamento) ===
 const isPureGreeting =
   /^(bom\s*dia|boa\s*tarde|boa\s*noite|ol[áa]|oi)\s*!?\.?$/i.test((userText || "").trim());
@@ -1079,15 +1084,18 @@ if (isPureGreeting) {
   const earlySaidCancel =
     /\b(2|op[cç][aã]o\s*2|cancelar|quero\s*cancelar|desmarcar)\b/.test(normEarly);
 
-  // 3) AUTO-ARM: se o Worker não marcou a fase, mas o paciente respondeu 1/2,
-  // armamos agora e deixamos inTemplate=true para este mesmo turno
-  if (!inTemplate && (earlySaidConfirm || earlySaidCancel)) {
+    // 3) AUTO-ARM (apertado): só arma SE já houver contexto do template ativo.
+  // Evita sequestrar "1/2" quando a conversa está em outra fase (ex.: escolhendo horários).
+  if (
+    !inTemplate &&
+    (earlySaidConfirm || earlySaidCancel) &&
+    conv?.templateCtx &&
+    conv.templateCtx.activeUntil &&
+    Date.now() <= conv.templateCtx.activeUntil
+  ) {
     conv.phase = "reminder_template";
-    conv.templateCtx = conv.templateCtx || {};
-    conv.templateCtx.setAt = Date.now();
-    conv.templateCtx.activeUntil = Date.now() + 48 * 60 * 60 * 1000; // 48h
     inTemplate = true;
-    console.log("[AUTO-ARM] Fase template armada dinamicamente para", from);
+    console.log("[AUTO-ARM] (apertado) fase template assumida para", from);
   }
 
   if (inTemplate) {
