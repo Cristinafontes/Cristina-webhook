@@ -1063,26 +1063,38 @@ if (isPureGreeting) {
   const convB = getConversation(keyB);
   const conv  = convA || convB || ensureConversation(keyA);
 
-  const inTemplate =
+    // 1) Sinal inicial da fase (pode ser atualizado pelo AUTO-ARM)
+  let inTemplate =
     conv?.phase === "reminder_template" &&
-
     (!conv?.templateCtx?.activeUntil || Date.now() <= conv.templateCtx.activeUntil);
-// --- AUTO-ARM: se o Worker mandou o lembrete (sem marcar a fase) e o paciente respondeu 1/2,
-// "armamos" a fase aqui para isolar do resto do robô.
-if (!inTemplate && (saidConfirm || saidCancel)) {
-  conv.phase = "reminder_template";
-}
+
+  // 2) Normaliza cedo e detecta "1/confirmar" e "2/cancelar" ANTES do if (inTemplate)
+  const normEarly = String(userText || "")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+
+  const earlySaidConfirm =
+    /\b(1|op[cç][aã]o\s*1|confirmar|confirmo|pode\s*deixar\s*certo|ok|pode\s*sim|sim)\b/.test(normEarly);
+
+  const earlySaidCancel =
+    /\b(2|op[cç][aã]o\s*2|cancelar|quero\s*cancelar|desmarcar)\b/.test(normEarly);
+
+  // 3) AUTO-ARM: se o Worker não marcou a fase, mas o paciente respondeu 1/2,
+  // armamos agora e deixamos inTemplate=true para este mesmo turno
+  if (!inTemplate && (earlySaidConfirm || earlySaidCancel)) {
+    conv.phase = "reminder_template";
+    conv.templateCtx = conv.templateCtx || {};
+    conv.templateCtx.setAt = Date.now();
+    conv.templateCtx.activeUntil = Date.now() + 48 * 60 * 60 * 1000; // 48h
+    inTemplate = true;
+    console.log("[AUTO-ARM] Fase template armada dinamicamente para", from);
+  }
 
   if (inTemplate) {
-    const norm = String(userText || "")
-      .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-      .toLowerCase();
-
-    const saidConfirm =
-      /\b(1|op[cç][aã]o\s*1|confirmar|confirmo|pode\s*deixar\s*certo|ok|pode\s*sim|sim)\b/.test(norm);
-
-    const saidCancel =
-      /\b(2|op[cç][aã]o\s*2|cancelar|quero\s*cancelar|desmarcar)\b/.test(norm);
+    // Reaproveita o que já calculamos
+    const norm = normEarly;
+    const saidConfirm = earlySaidConfirm;
+    const saidCancel  = earlySaidCancel;
 
     // ↳ CONFIRMAR → chama IA contextualizada para orientações (sem se reapresentar)
     if (saidConfirm) {
