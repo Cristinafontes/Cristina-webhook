@@ -1113,11 +1113,28 @@ if (isPureGreeting) {
             "• Medicamentos: liste uso atual e informe alergias.\n" +
             "• Jejum/analgésicos: seguir orientações quando indicado.\n" +
             "• Pontualidade: chegar 10–15 min antes.\n" +
-            "• Telemedicina: local silencioso, Wi-Fi estável, bateria >50%, câmera/mic ok.\n" +
+            "• Telemedicina(se for o caso): local silencioso, Wi-Fi estável, bateria >50%, câmera/mic ok.\n" +
             "Se surgir qualquer dúvida, me avise aqui 🙂"
   });
+        // --- Reativa Cristina de forma contextualizada ---
+  // Usa a própria mensagem do paciente como ponto de partida para manter o contexto ativo
+  setTimeout(async () => {
+    try {
+      await askCristina({
+        from,
+        userText: userText || "confirmação de consulta",
+        context: {
+          origin: "reminder_template_confirm",
+          note: "Paciente acabou de confirmar consulta. Manter contexto de orientações pré-consulta."
+        }
+      });
+    } catch (err) {
+      console.error("[ERRO ao chamar Cristina contextualizada pós-template]:", err);
+    }
+  }, 2000); // espera 2s para parecer humano
+
   return; // importantíssimo: não deixa cair nos outros fluxos
-}
+    }
 
     // ↳ CANCELAR → entra direto no modo cancelamento pedindo confirmação "sim/não"
     if (saidCancel) {
