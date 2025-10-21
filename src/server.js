@@ -1055,10 +1055,15 @@ ensureConversation(from).lastUserAt = Date.now();
   conv.lastKnownPhone = from;
 }
 
-    if (["reset", "reiniciar", "reiniciar conversa", "novo atendimento"].includes(trimmed)) {
-  resetConversation(from);
+    if (["reset", "reiniciar", "novo atendimento"].includes(trimmed)) {
+  const d = String(from).replace(/\D/g, "");
+  const withDDI = d.startsWith("55") ? d : "55" + d;
+  const noDDI = d.startsWith("55") ? d.slice(2) : d;
+  resetConversation(withDDI);
+  resetConversation(noDDI);
   return;
 }
+
   // === BLACKLIST DE SAUDAÇÕES (não dispara pescagem nem agendamento) ===
 const isPureGreeting =
   /^(bom\s*dia|boa\s*tarde|boa\s*noite|ol[áa]|oi)\s*!?\.?$/i.test((userText || "").trim());
