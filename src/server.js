@@ -2768,27 +2768,36 @@ if (busy) {
     msg += "\n\nNos próximos dias não há janelas livres. Posso procurar mais adiante.";
   }
   await sendText({ to: from, text: msg });
-if (!alternativas?.length) return; // só sai se não houver opções
+return; // sai SEM criar evento quando está ocupado
+}
+// (LOG) antes de criar, pra garantir que chegamos aqui com dados válidos
+console.log("[CALENDAR] preparing", { startISO, endISO, name, phoneFormatted, modality });
+
+try {
+  await createCalendarEvent({
+    summary,
+    description:
+      description +
+      `\n#patient_phone:${onlyDigits(phoneFormatted)}` +
+      `\n#patient_name:${String(name || "").trim().toLowerCase()}`,
+    startISO,
+    endISO,
+    attendees: [], // inclua e-mails só com consentimento
+    location: process.env.CLINIC_ADDRESS || "Clínica",
+    extendedProperties: {
+      private: {
+        patient_phone: onlyDigits(phoneFormatted),
+        patient_name: String(name || "").trim().toLowerCase(),
+        modality
+      }
+    }
+  });
+
+  console.log("[CALENDAR] created OK", { startISO });
+} catch (e) {
+  console.error("[CALENDAR] create failed:", e?.response?.data || e?.message || e);
 }
 
-await createCalendarEvent({
-  summary,
-  description:
-    description +
-    `\n#patient_phone:${onlyDigits(phoneFormatted)}` +
-    `\n#patient_name:${String(name || "").trim().toLowerCase()}`,
-  startISO,
-  endISO,
-  attendees: [], // inclua e-mails só com consentimento
-  location: process.env.CLINIC_ADDRESS || "Clínica",
-  extendedProperties: {
-    private: {
-      patient_phone: onlyDigits(phoneFormatted),
-      patient_name: String(name || "").trim().toLowerCase(),
-      modality
-    }
-  }
-});
 
             try {
   const startISOwithTime = startISO; // já está no formato ISO com hora
