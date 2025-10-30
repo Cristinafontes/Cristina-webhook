@@ -2768,7 +2768,7 @@ if (busy) {
     msg += "\n\nNos próximos dias não há janelas livres. Posso procurar mais adiante.";
   }
   await sendText({ to: from, text: msg });
-  return; // não cria evento, sai daqui
+if (!alternativas?.length) return; // só sai se não houver opções
 }
 
 await createCalendarEvent({
